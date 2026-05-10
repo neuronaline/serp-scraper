@@ -9,7 +9,7 @@ description = "SERP scraper with undetected-chromedriver, proxy rotation, and st
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
-    {name = "flashneuron", email = "flashneuron@proton.me"}
+    {name = "neuronaline", email = "flashneuron@proton.me"}
 ]
 keywords = [
     "serp", "scraping", "google", "search", "results",
@@ -58,10 +58,10 @@ test = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/flashneuron/serp-scraper"
-Repository = "https://github.com/flashneuron/serp-scraper"
-Issues = "https://github.com/flashneuron/serp-scraper/issues"
-Changelog = "https://github.com/flashneuron/serp-scraper/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/neuronaline/serp-scraper"
+Repository = "https://github.com/neuronaline/serp-scraper"
+Issues = "https://github.com/neuronaline/serp-scraper/issues"
+Changelog = "https://github.com/neuronaline/serp-scraper/blob/main/CHANGELOG.md"
 
 # Buradaki paket tanımlamasını 'find' içine taşıdık, çakışma giderildi.
 [tool.setuptools]

@@ -29,7 +29,7 @@ pip install serp-scraper
 ### From Source
 
 ```bash
-git clone https://github.com/flashneuron/serp-scraper.git
+git clone https://github.com/neuronaline/serp-scraper.git
 cd serp-scraper
 pip install -e .
 ```
@@ -480,13 +480,13 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 ## Author
 
-**flashneuron** - flashneuron@proton.me
+**neuronaline** - flashneuron@proton.me
 
 ## Links
 
-- [Repository](https://github.com/flashneuron/serp-scraper)
-- [Issue Tracker](https://github.com/flashneuron/serp-scraper/issues)
-- [Changelog](https://github.com/flashneuron/serp-scraper/blob/main/CHANGELOG.md)
+- [Repository](https://github.com/neuronaline/serp-scraper)
+- [Issue Tracker](https://github.com/neuronaline/serp-scraper/issues)
+- [Changelog](https://github.com/neuronaline/serp-scraper/blob/main/CHANGELOG.md)
 
 ## Disclaimer
 
