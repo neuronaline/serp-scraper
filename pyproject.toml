@@ -1,0 +1,84 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "serp-scraper"
+version = "2.0.0"
+description = "SERP scraper with undetected-chromedriver, proxy rotation, and stealth browsing"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "flashneuron", email = "flashneuron@proton.me"}
+]
+keywords = [
+    "serp", "scraping", "google", "search", "results",
+    "undetected-chromedriver", "selenium", "web-scraping",
+    "proxy", "proxy-rotation", "stealth", "browser-automation"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+requires-python = ">=3.10"
+dependencies = [
+    "nodriver>=4.0.0",
+    "markdownify>=0.12.0",
+    "httpx>=0.25.0",
+    "beautifulsoup4>=4.12.0",
+    "pydantic>=2.0.0",
+    'python-dotenv>=1.0.0',
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.0.0",
+    "build>=1.0.0",
+    "twine>=4.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
+]
+test = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.0.0",
+    "pytest-mock>=3.10.0",
+    "pytest-httpserver>=1.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/flashneuron/serp-scraper"
+Repository = "https://github.com/flashneuron/serp-scraper"
+Issues = "https://github.com/flashneuron/serp-scraper/issues"
+Changelog = "https://github.com/flashneuron/serp-scraper/blob/main/CHANGELOG.md"
+
+[tool.setuptools]
+packages = ["serp"]
+
+[tool.setuptools.package-data]
+serp = ["py.typed"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_return_any = true
+warn_unused_configs = true

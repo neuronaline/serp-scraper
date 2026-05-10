@@ -1,0 +1,4 @@
+nodriver
+markdownify
+httpx
+beautifulsoup4

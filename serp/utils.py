@@ -1,0 +1,250 @@
+"""Utility functions, constants, and exception classes for SERP module."""
+
+import asyncio
+import base64
+import logging
+import os
+import random
+import urllib.parse
+from typing import Optional, Union
+
+import httpx
+import markdownify
+
+from .config import (
+    BING_URL_TEMPLATE,
+    USER_AGENTS,
+    load_config,
+)
+
+# Configure module logger
+logger = logging.getLogger(__name__)
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+    )
+    logger.addHandler(handler)
+    _default_level = logging.DEBUG if os.getenv("SERP_DEBUG") else logging.WARNING
+    logger.setLevel(_default_level)
+
+
+def set_log_level(level: Union[str, int]) -> None:
+    """Set the log level for all serp loggers.
+
+    Args:
+        level: Log level as string ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+                or as integer (logging.DEBUG, etc.)
+
+    Example:
+        >>> from serp import set_log_level
+        >>> set_log_level("DEBUG")  # Enable debug logging
+        >>> set_log_level("WARNING")  # Only show warnings and errors
+
+        Or with logging module:
+        >>> import logging
+        >>> from serp import set_log_level
+        >>> set_log_level(logging.DEBUG)
+    """
+    if isinstance(level, str):
+        level = getattr(logging, level.upper(), logging.WARNING)
+
+    # Set level for all serp-related loggers
+    for name in logging.Logger.manager.loggerDict:
+        if name.startswith("serp"):
+            logging.getLogger(name).setLevel(level)
+
+    # Also set for the root serp logger and module-level logger
+    logger.setLevel(level)
+
+# Constants
+MAX_RETRIES = int(os.getenv("SERP_MAX_RETRIES", "3"))
+RETRY_DELAY_MIN = float(os.getenv("SERP_RETRY_DELAY_MIN", "0.5"))
+RETRY_DELAY_MAX = float(os.getenv("SERP_RETRY_DELAY_MAX", "2.0"))
+USE_EXPONENTIAL_BACKOFF = os.getenv("SERP_EXPONENTIAL_BACKOFF", "false").lower() == "true"
+TIMEOUT_SECONDS = 30
+TIMEOUT_MS = TIMEOUT_SECONDS * 1000  # Backward compatibility alias
+
+
+class ProxyError(Exception):
+    """All proxies failed."""
+    pass
+
+
+class CaptchaError(Exception):
+    """Captcha could not be solved after retries."""
+    pass
+
+
+class PageTimeoutError(Exception):
+    """Page load timeout."""
+    pass
+
+
+class ParseError(Exception):
+    """Failed to parse results."""
+    pass
+
+
+def _random_user_agent() -> str:
+    """Return a random user agent string."""
+    return random.choice(USER_AGENTS)
+
+
+def _build_proxy_url(proxy: dict) -> Optional[str]:
+    """Build proper proxy URL with authentication.
+
+    Args:
+        proxy: Proxy dict with 'server', 'username', 'password' keys.
+
+    Returns:
+        Proxy URL string with authentication embedded, or just server if no auth.
+    """
+    server = proxy.get("server")
+    if not server:
+        return None
+
+    username = proxy.get("username")
+    password = proxy.get("password")
+
+    if username:
+        from urllib.parse import urlparse
+        # Parse the server URL to get scheme and hostname
+        parsed = urlparse(server)
+        scheme = parsed.scheme or "http"
+        hostname = parsed.hostname or ""
+
+        # Build port part if present
+        if parsed.port:
+            port_part = f":{parsed.port}"
+        else:
+            port_part = ""
+
+        # Build auth part
+        if password:
+            auth_part = f"{username}:{password}@"
+        else:
+            auth_part = f"{username}@"
+
+        return f"{scheme}://{auth_part}{hostname}{port_part}"
+
+    return server
+
+
+def _wait_random_delay() -> None:
+    """Wait random delay between retries (sync version)."""
+    delay = random.uniform(RETRY_DELAY_MIN, RETRY_DELAY_MAX)
+    import time
+    time.sleep(delay)
+
+
+def _calculate_backoff_delay(attempt: int) -> float:
+    """Calculate delay with exponential backoff and jitter.
+
+    Args:
+        attempt: Current attempt number (1-indexed)
+
+    Returns:
+        Delay in seconds
+    """
+    if USE_EXPONENTIAL_BACKOFF:
+        # Exponential backoff: base * 2^(attempt-1) with jitter
+        base_delay = random.uniform(RETRY_DELAY_MIN, RETRY_DELAY_MAX)
+        exponential_delay = base_delay * (2 ** (attempt - 1))
+        # Cap at max delay
+        delay = min(exponential_delay, RETRY_DELAY_MAX)
+    else:
+        delay = random.uniform(RETRY_DELAY_MIN, RETRY_DELAY_MAX)
+    return delay
+
+
+async def _wait_random_delay_async(attempt: int = 1) -> None:
+    """Wait random delay between retries with exponential backoff.
+
+    Args:
+        attempt: Current attempt number for exponential backoff calculation
+    """
+    delay = _calculate_backoff_delay(attempt)
+    await asyncio.sleep(delay)
+
+
+async def _retry_failed(attempt: int, error: Exception, func_name: str) -> bool:
+    """Handle failed retry attempt. Returns True to continue retrying, False to stop."""
+    logger.warning(f"{func_name} attempt {attempt} failed: {error}")
+    if attempt < MAX_RETRIES:
+        await _wait_random_delay_async(attempt)
+        return True
+    return False
+
+
+async def _fetch_http(url: str, proxy_file: str) -> str:
+    """Simple HTTP fetch using httpx."""
+    config = load_config(proxy_file)
+
+    proxy = config.get_random_proxy()
+    if proxy is None:
+        logger.warning("No proxy configured - proceeding without proxy")
+        proxy_url = None
+    else:
+        # Build proxy URL for httpx with proper protocol handling
+        proxy_url = _build_proxy_url(proxy)
+
+    headers = {
+        "User-Agent": _random_user_agent(),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+    }
+
+    async with httpx.AsyncClient(
+        proxy=proxy_url,
+        timeout=30.0,
+        follow_redirects=True,
+        headers=headers,
+    ) as client:
+        response = await client.get(url)
+        if response.status_code != 200:
+            raise ProxyError(f"HTTP {response.status_code}")
+
+        return markdownify.markdownify(
+            response.text,
+            heading_style="ATX",
+        )
+
+
+def _extract_bing_real_url(redirect_url: str) -> str:
+    """Extract the real URL from a Bing redirect URL.
+
+    Bing redirect URLs contain the actual URL encoded in the 'u' parameter.
+    Example: https://www.bing.com/ck/a?...&u=a1aHR0cHM6Ly9sZWFybi5taWNyb3NvZnQuY29t...
+    The 'u' parameter contains a base64-encoded URL with a 2-character prefix that
+    needs to be stripped before decoding.
+    """
+    if not redirect_url or "bing.com/ck/a" not in redirect_url:
+        return redirect_url
+
+    try:
+        parsed = urllib.parse.urlparse(redirect_url)
+        query_params = urllib.parse.parse_qs(parsed.query)
+
+        # The 'u' parameter contains the base64-encoded URL
+        if "u" in query_params:
+            encoded_url = query_params["u"][0]
+            # Strip the 2-character prefix (usually 'a1') before the actual base64 data
+            # The actual base64 string starts at index 2
+            if len(encoded_url) > 2:
+                encoded_url = encoded_url[2:]
+
+            # Add padding if needed
+            padding_needed = (4 - len(encoded_url) % 4) % 4
+            encoded_url += "=" * padding_needed
+
+            # Decode base64
+            decoded = base64.b64decode(encoded_url).decode("utf-8")
+            return decoded
+    except Exception as e:
+        logger.debug(f"Failed to decode Bing redirect URL: {e}")
+
+    return redirect_url
