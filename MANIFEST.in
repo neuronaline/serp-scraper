@@ -1,0 +1,25 @@
+# Yanlışlıkla eklenebilecek hassas ve projeye özel dosyaları engelle
+exclude proxies.json
+exclude .env
+exclude .env.example
+exclude main.py
+
+# Log dosyalarını engelle
+global-exclude *.log
+
+# Derlenmiş Python dosyalarını engelle
+global-exclude *.py[cod]
+global-exclude __pycache__/*
+global-exclude *.so
+
+# Gereksiz klasörleri tamamen devre dışı bırak (prune komutu klasörler içindir)
+prune venv
+prune env
+prune .pytest_cache
+prune .mypy_cache
+prune .cache
+prune .kilo
+prune .idea
+prune .vscode
+prune docs
+prune sample

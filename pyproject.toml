@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "serp-scraper"
-version = "2.0.0"
+version = "2.0.1"
 description = "SERP scraper with undetected-chromedriver, proxy rotation, and stealth browsing"
 readme = "README.md"
 license = {text = "MIT"}
@@ -63,11 +63,24 @@ Repository = "https://github.com/flashneuron/serp-scraper"
 Issues = "https://github.com/flashneuron/serp-scraper/issues"
 Changelog = "https://github.com/flashneuron/serp-scraper/blob/main/CHANGELOG.md"
 
+# Buradaki paket tanımlamasını 'find' içine taşıdık, çakışma giderildi.
 [tool.setuptools]
-packages = ["serp"]
+package-data = {"serp" = ["py.typed"]}
 
-[tool.setuptools.package-data]
-serp = ["py.typed"]
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["serp*"]
+exclude = [
+    "tests*", 
+    "docs*", 
+    "sample*", 
+    "venv*", 
+    "env*", 
+    ".cache*",
+    ".kilo*",
+    "main.py",
+    "proxies.json"
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
