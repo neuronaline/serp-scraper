@@ -109,7 +109,6 @@ from serp import SerpClient, SerpConfig
 
 # Create configured client
 config = SerpConfig(
-    proxy_file="proxies.json",
     log_level="DEBUG",
     max_retries=5,
     cache_ttl=3600,  # 1 hour
@@ -166,7 +165,6 @@ SERP_USER_AGENT=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `proxy_file` | str | `"proxies.json"` | Path to proxies.json (for backward compatibility) |
 | `custom_proxies` | str | `""` | Comma-separated proxy URLs from env |
 | `proxy_strategy` | str | `"dataimpulse_first"` | Proxy selection: "random" or "dataimpulse_first" |
 | `dataimpulse_gateway` | str | `None` | DataImpulse gateway URL |
@@ -185,34 +183,15 @@ SERP_USER_AGENT=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
 | `headless` | bool | `false` | Run browser in headless mode |
 | `user_agent` | str | `None` | Custom user agent string |
 
-### Proxy Configuration (`proxies.json`)
-
-```json
-{
-  "dataimpulse": {
-    "gateway": "http://gw.dataimpulse.com:10001",
-    "username": "YOUR_DATAIMPULSE_USER",
-    "password": "YOUR_DATAIMPULSE_PASS"
-  },
-  "proxies": [
-    {
-      "url": "http://username:password@proxy.example.com:8080"
-    },
-    {
-      "url": "socks5://proxy.example.com:1080"
-    }
-  ]
-}
-```
-
 ### Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `SERP_DEFAULT_PROXY_FILE` | Path to proxy configuration file | `proxies.json` |
 | `SERP_DATAIMPULSE_GATEWAY` | DataImpulse gateway URL | - |
 | `SERP_DATAIMPULSE_USER` | DataImpulse username | - |
 | `SERP_DATAIMPULSE_PASS` | DataImpulse password | - |
+| `SERP_CUSTOM_PROXIES` | Comma-separated proxy URLs | - |
+| `SERP_PROXY_STRATEGY` | Proxy selection strategy | `dataimpulse_first` |
 | `SERP_LOG_LEVEL` | Logging level | `WARNING` |
 | `SERP_CACHE_DIR` | Cache directory path | `.cache/serp` |
 | `SERP_CACHE_TTL` | Default cache TTL in seconds | `86400` |
@@ -235,14 +214,13 @@ The recommended high-level interface for using the library.
 from serp import SerpClient
 
 client = SerpClient(
-    proxy_file="proxies.json",  # Optional
     headless=False,              # Optional
-    use_cache=True,              # Optional
-    cache_ttl=86400,             # Optional
-    source=None,                 # Optional: "google", "bing", or None (auto)
+    use_cache=True,             # Optional
+    cache_ttl=86400,            # Optional
+    source=None,                # Optional: "google", "bing", or None (auto)
     max_retries=3,              # Optional
     timeout=30,                 # Optional
-    log_level="WARNING",         # Optional
+    log_level="WARNING",        # Optional
 )
 ```
 
@@ -331,21 +309,6 @@ content = await quick_fetch("https://example.com")
 
 ---
 
-### Backward Compatibility Functions
-
-Legacy functions for existing code:
-
-```python
-from serp import search, fetch, search_simple
-
-# These still work but use per-call parameters
-results = await search("query", proxy_file="proxies.json")
-content = await fetch("https://example.com", proxy_file="proxies.json")
-results = await search_simple("query", proxy_file="proxies.json")
-```
-
----
-
 ### Utility Functions
 
 #### `set_log_level(level)`
@@ -402,7 +365,7 @@ serp-scraper/
 ├── serp/                    # Main package
 │   ├── __init__.py          # Exports and API
 │   ├── client.py            # SerpClient and quick functions
-│   ├── config.py            # Legacy proxy configuration
+│   ├── config.py            # Configuration constants
 │   ├── config_pydantic.py   # Pydantic-based configuration
 │   ├── types.py             # Type definitions (SearchResult, etc.)
 │   ├── search.py            # Browser-based search
@@ -416,7 +379,6 @@ serp-scraper/
 │   └── test_cache.py
 ├── main.py                  # Interactive CLI tool
 ├── .env.example            # Environment variables template
-├── proxies.json            # Proxy configuration (optional)
 ├── pyproject.toml          # Project metadata
 └── README.md               # This file
 ```

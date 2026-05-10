@@ -17,6 +17,11 @@ from .types import CacheSettings, LoggingSettings, ProxySettings, RetryPolicy, S
 ENV_DOTENV_FILE = "SERP_DOTENV_FILE"
 ENV_CONFIG_FILE = "SERP_CONFIG_FILE"
 
+# DataImpulse default ports (from documentation)
+DATAIMPULSE_HTTP_PORT = 823  # HTTP/HTTPS rotating
+DATAIMPULSE_SOCKS5_PORT = 824  # SOCKS5 rotating
+DATAIMPULSE_STICKY_PORT_RANGE = (10000, 20000)  # Sticky proxy port range
+
 
 class SerpBaseConfig(BaseModel):
     """Base configuration with common settings."""
@@ -47,7 +52,6 @@ class SerpConfig(SerpBaseConfig):
         SERP_DATAIMPULSE_GATEWAY=gateway.example.com
         SERP_DATAIMPULSE_USER=myuser
         SERP_DATAIMPULSE_PASS=mypass
-        SERP_DEFAULT_PROXY_FILE=proxies.json
         SERP_LOG_LEVEL=DEBUG
         SERP_CACHE_ENABLED=true
         SERP_CACHE_TTL=86400
@@ -57,17 +61,20 @@ class SerpConfig(SerpBaseConfig):
     Example usage:
         >>> from serp import SerpConfig
         >>> config = SerpConfig()
-        >>> config = SerpConfig(proxy_file="my_proxies.json", log_level="DEBUG")
+        >>> config = SerpConfig(log_level="DEBUG")
     """
 
     # Top-level settings that map to nested objects
-    proxy_file: str = Field(default="proxies.json", alias="SERP_DEFAULT_PROXY_FILE")
     log_level: str = Field(default="WARNING", alias="SERP_LOG_LEVEL")
 
     # DataImpulse settings
     dataimpulse_gateway: Optional[str] = Field(default=None, alias="SERP_DATAIMPULSE_GATEWAY")
     dataimpulse_user: Optional[str] = Field(default=None, alias="SERP_DATAIMPULSE_USER")
     dataimpulse_pass: Optional[str] = Field(default=None, alias="SERP_DATAIMPULSE_PASS")
+    dataimpulse_protocol: str = Field(default="http", alias="SERP_DATAIMPULSE_PROTOCOL")
+    dataimpulse_country: Optional[str] = Field(default=None, alias="SERP_DATAIMPULSE_COUNTRY")
+    dataimpulse_sessid: Optional[str] = Field(default=None, alias="SERP_DATAIMPULSE_SESSID")
+    dataimpulse_sessttl: Optional[int] = Field(default=None, alias="SERP_DATAIMPULSE_SESSTTL")
 
     # Custom proxies (comma-separated in env var)
     custom_proxies: str = Field(default="", alias="SERP_CUSTOM_PROXIES")
@@ -182,11 +189,14 @@ class SerpConfig(SerpBaseConfig):
     def _apply_env_overrides(self, data: dict[str, Any]) -> None:
         """Apply environment variable overrides to data."""
         env_mappings = {
-            "SERP_DEFAULT_PROXY_FILE": "proxy_file",
             "SERP_LOG_LEVEL": "log_level",
             "SERP_DATAIMPULSE_GATEWAY": "dataimpulse_gateway",
             "SERP_DATAIMPULSE_USER": "dataimpulse_user",
             "SERP_DATAIMPULSE_PASS": "dataimpulse_pass",
+            "SERP_DATAIMPULSE_PROTOCOL": "dataimpulse_protocol",
+            "SERP_DATAIMPULSE_COUNTRY": "dataimpulse_country",
+            "SERP_DATAIMPULSE_SESSID": "dataimpulse_sessid",
+            "SERP_DATAIMPULSE_SESSTTL": "dataimpulse_sessttl",
             "SERP_CUSTOM_PROXIES": "custom_proxies",
             "SERP_PROXY_STRATEGY": "proxy_strategy",
             "SERP_CACHE_ENABLED": "cache_enabled",
@@ -208,7 +218,7 @@ class SerpConfig(SerpBaseConfig):
                 # Type coercion
                 if field_name in ("cache_enabled", "exponential_backoff", "headless"):
                     value = value.lower() in ("true", "1", "yes")
-                elif field_name in ("max_retries", "cache_ttl", "timeout"):
+                elif field_name in ("max_retries", "cache_ttl", "timeout", "dataimpulse_sessttl"):
                     try:
                         value = int(value)
                     except ValueError:
@@ -229,12 +239,15 @@ class SerpConfig(SerpBaseConfig):
             custom_proxies_list = [p.strip() for p in self.custom_proxies.split(",") if p.strip()]
 
         self.proxy = ProxySettings(
-            proxy_file=self.proxy_file,
             custom_proxies=custom_proxies_list,
             dataimpulse_gateway=self.dataimpulse_gateway,
             dataimpulse_user=self.dataimpulse_user,
             dataimpulse_pass=self.dataimpulse_pass,
             strategy=self.proxy_strategy,
+            dataimpulse_protocol=self.dataimpulse_protocol,
+            dataimpulse_country=self.dataimpulse_country,
+            dataimpulse_sessid=self.dataimpulse_sessid,
+            dataimpulse_sessttl=self.dataimpulse_sessttl,
         )
 
         self.cache = CacheSettings(
@@ -269,13 +282,16 @@ class SerpConfig(SerpBaseConfig):
     def get_nested_dict(self) -> dict[str, Any]:
         """Get configuration as nested dictionary (for backward compatibility)."""
         return {
-            "proxy_file": self.proxy_file,
             "custom_proxies": self.custom_proxies,
             "proxy_strategy": self.proxy_strategy,
             "log_level": self.log_level,
             "dataimpulse_gateway": self.dataimpulse_gateway,
             "dataimpulse_user": self.dataimpulse_user,
             "dataimpulse_pass": self.dataimpulse_pass,
+            "dataimpulse_protocol": self.dataimpulse_protocol,
+            "dataimpulse_country": self.dataimpulse_country,
+            "dataimpulse_sessid": self.dataimpulse_sessid,
+            "dataimpulse_sessttl": self.dataimpulse_sessttl,
             "cache_enabled": self.cache_enabled,
             "cache_dir": self.cache_dir,
             "cache_ttl": self.cache_ttl,

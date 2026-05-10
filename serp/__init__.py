@@ -29,12 +29,12 @@ Example:
         SERP_DATAIMPULSE_USER=myuser
         SERP_DATAIMPULSE_PASS=mypass
         SERP_LOG_LEVEL=DEBUG
+        SERP_CUSTOM_PROXIES=http://user:pass@proxy.com:8080
 
     Configuration with SerpConfig:
 
     >>> from serp import SerpClient, SerpConfig
     >>> config = SerpConfig(
-    ...     proxy_file="proxies.json",
     ...     log_level="DEBUG",
     ...     max_retries=5,
     ...     cache_ttl=3600,  # 1 hour
@@ -56,11 +56,6 @@ from .config_pydantic import SerpConfig
 
 # Convenience functions (use default client)
 from .client import quick_search, quick_fetch, quick_search_http
-
-# Backward-compatible functions from old module
-from .search import search
-from .fetch import fetch
-from .simple import search_simple
 
 # Utilities
 from .utils import (
@@ -89,10 +84,6 @@ __all__ = [
     "quick_search",
     "quick_fetch",
     "quick_search_http",
-    # Backward-compatible functions (use per-call parameters)
-    "search",
-    "fetch",
-    "search_simple",
     # Utilities
     "set_log_level",
     "get_default_client",

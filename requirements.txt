@@ -2,3 +2,5 @@ nodriver
 markdownify
 httpx
 beautifulsoup4
+python-dotenv
+pydantic

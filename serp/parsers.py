@@ -7,8 +7,22 @@ import markdownify
 import nodriver as uc
 
 from .config import BING_URL_TEMPLATE
-from .utils import CaptchaError, PageTimeoutError, ParseError, _extract_bing_real_url, logger
+from .utils import (
+    CaptchaError,
+    PageTimeoutError,
+    ParseError,
+    _build_chrome_proxy_arg,
+    _extract_bing_real_url,
+    logger,
+)
 from nodriver.cdp.runtime import RemoteObject
+from nodriver.cdp.fetch import (
+    enable as fetch_enable,
+    AuthRequired,
+    continue_with_auth,
+    AuthChallengeResponse,
+    RequestPaused,
+)
 
 
 def _check_captcha(url: str, page_source: str = "") -> bool:
@@ -36,26 +50,128 @@ async def _create_browser(
     proxy: Optional[dict] = None,
     headless: bool = False,
 ) -> Optional[uc.Browser]:
-    """Create and return a nodriver browser instance."""
+    """Create and return a nodriver browser instance.
+
+    Uses nodriver.start() as recommended in the documentation.
+    Sandbox is disabled for Linux/root environments.
+
+    Proxy credentials are NOT embedded in --proxy-server because Chrome
+    does not support user:pass@host format. Authentication is handled
+    separately via CDP Fetch.authRequired event in _setup_proxy_auth().
+    """
     browser_args = [
-        "--no-sandbox",
         "--disable-dev-shm-usage",
+        "--disable-blink-features=AutomationControlled",
+        "--disable-extensions",
+        "--disable-infobars",
     ]
 
     if proxy:
-        server = proxy.get("server", "")
-        if server:
-            browser_args.append(f"--proxy-server={server}")
+        # Chrome does NOT support embedded credentials. Pass host:port only.
+        proxy_arg = _build_chrome_proxy_arg(proxy)
+        if proxy_arg:
+            browser_args.append(f"--proxy-server={proxy_arg}")
+            logger.debug(f"Proxy configured (auth via CDP): {proxy_arg}")
 
     try:
+        import os
+
+        # nodriver.start() handles --no-sandbox automatically based on this flag.
+        # sandbox=False is essential for Linux/root environments.
+        sandbox = os.geteuid() != 0  # True = sandbox enabled (non-root), False = disabled (root)
+
         browser = await uc.start(
             headless=headless,
             browser_args=browser_args,
+            sandbox=sandbox,
         )
         return browser
     except Exception as e:
         logger.error(f"Failed to start browser: {e}")
         return None
+
+
+async def _create_browser_with_proxy_auth(
+    proxy: dict,
+    headless: bool = False,
+) -> Optional[uc.Browser]:
+    """Create browser with proxy that requires authentication.
+
+    Uses a background tab to establish proxy connectivity first,
+    then navigates to the target URL on a new tab.
+
+    This approach ensures the proxy connection is authenticated before
+    any actual browsing happens.
+    """
+    import os
+
+    browser_args = [
+        "--disable-dev-shm-usage",
+        "--disable-blink-features=AutomationControlled",
+        "--disable-extensions",
+        "--disable-infobars",
+    ]
+
+    # Proxy without embedded credentials
+    proxy_arg = _build_chrome_proxy_arg(proxy)
+    if proxy_arg:
+        browser_args.append(f"--proxy-server={proxy_arg}")
+
+    try:
+        sandbox = os.geteuid() != 0
+        browser = await uc.start(
+            headless=headless,
+            browser_args=browser_args,
+            sandbox=sandbox,
+        )
+        return browser
+    except Exception as e:
+        logger.error(f"Failed to start browser with proxy auth: {e}")
+        return None
+
+
+async def _setup_proxy_auth(
+    tab: uc.Tab,
+    proxy: dict,
+) -> None:
+    """Set up CDP-based proxy authentication on a tab.
+
+    Chrome's --proxy-server flag does not support embedded credentials.
+    Instead, we enable the Fetch domain to intercept 407 Proxy Auth
+    Required challenges and respond with the stored credentials.
+
+    Must be called BEFORE navigating to a URL that requires proxy auth.
+
+    Args:
+        tab: nodriver Tab to set up auth on (typically about:blank)
+        proxy: Proxy dict with 'username' and 'password' keys
+    """
+    username = proxy.get("username")
+    password = proxy.get("password")
+    if not username or not password:
+        return  # Nothing to set up
+
+    async def _on_auth_required(event: AuthRequired) -> None:
+        """Respond to proxy auth challenge with credentials."""
+        logger.debug(f"AuthRequired event: {event}")
+        await tab.send(continue_with_auth(
+            request_id=event.request_id,
+            auth_challenge_response=AuthChallengeResponse(
+                response="ProvideCredentials",
+                username=username,
+                password=password,
+            ),
+        ))
+
+    # Enable Fetch domain with auth request handling
+    # handle_auth_requests=True makes Chrome pause on auth challenges and fire AuthRequired
+    await tab.send(fetch_enable(handle_auth_requests=True))
+    tab.add_handler(AuthRequired, _on_auth_required)
+
+    logger.debug(
+        f"CDP proxy auth handler registered for "
+        f"{username[:8]}... on tab {tab.target.target_id[:8]}"
+    )
 
 
 def _extract_js_value(obj) -> Any:
@@ -270,17 +386,44 @@ async def _search_impl(
 
     tab = None
     try:
+        # Navigate directly to the search URL
+        # Proxy (if configured) is passed via --proxy-server to Chrome
         tab = await browser.get(url)
-        # Wait for the page to fully load (Google loads results dynamically)
-        await tab.wait(3)
 
-        # Check for CAPTCHA/sorry page
+        # Smart wait: wait for search results (or CAPTCHA page) to actually appear
+        # Instead of a fixed sleep, we wait for known DOM elements to materialize.
+        # This handles slow proxies/connections gracefully without a hardcoded limit.
+        try:
+            if source == "bing":
+                # Bing wraps results in li.b_algo elements
+                await tab.select("li.b_algo, #b_results", timeout=15)
+                # Extra short wait for Bing to finish rendering all results
+                await asyncio.sleep(1)
+            else:
+                # Google wraps results in div.g / div#rso elements
+                await tab.select("div.g, div#rso, div.MjjYud", timeout=15)
+        except Exception as e:
+            logger.debug(f"Smart wait for {source} results timed out: {e}")
+            # Fallback: small extra wait before checking for errors/CAPTCHA
+            await asyncio.sleep(1)
+
+        # Check for CAPTCHA / error pages (check both URL and page content)
         current_url = (tab.url or "").lower()
         if "sorry/app" in current_url or "/captcha/" in current_url:
             raise CaptchaError(captcha_msg)
 
         if not tab.url or tab.url == "about:blank":
             raise PageTimeoutError("Failed to navigate - page did not load")
+
+        # Check page content for CAPTCHA or blocking patterns
+        try:
+            page_html = await tab.get_content()
+            if _check_captcha(tab.url, page_html):
+                raise CaptchaError(captcha_msg)
+        except CaptchaError:
+            raise
+        except Exception:
+            pass  # if content retrieval fails, proceed anyway
 
         # Parse results
         if source == "bing":
@@ -329,6 +472,7 @@ async def _fetch_browser_impl(
 
     tab = None
     try:
+        # Navigate directly - proxy is configured via --proxy-server
         tab = await browser.get(url)
         await tab.wait(3)
 

@@ -5,16 +5,14 @@ all functionality with a simple, consistent API.
 """
 
 import logging
-import os
+import random
 from typing import Optional
+from urllib.parse import urlparse
 
 from .cache import get_cache as _get_cache, reset_cache
-from .config import ProxyConfig, load_config
 from .config_pydantic import SerpConfig, get_default_config, reset_default_config
-from .fetch import fetch as _fetch
+from .http_search import _search_google_simple, _search_simple_impl_bing
 from .parsers import _fetch_browser_impl, _search_impl
-from .search import search as _search
-from .simple import search_simple as _search_simple
 from .types import CacheSettings, ProxySettings, RetryPolicy, SearchResult, SearchSettings
 from .utils import (
     MAX_RETRIES,
@@ -62,7 +60,6 @@ class SerpClient:
     def __init__(
         self,
         config: Optional[SerpConfig] = None,
-        proxy_file: Optional[str] = None,
         headless: bool = False,
         use_cache: bool = True,
         cache_ttl: int = 86400,
@@ -75,7 +72,6 @@ class SerpClient:
 
         Args:
             config: SerpConfig instance. If provided, other parameters are ignored.
-            proxy_file: Path to proxies.json file (default: "proxies.json")
             headless: Whether to run browser in headless mode (default: False)
             use_cache: Whether to use caching (default: True)
             cache_ttl: Cache time-to-live in seconds (default: 86400 = 24h)
@@ -85,7 +81,7 @@ class SerpClient:
             log_level: Logging level (default: "WARNING")
 
         Example:
-            >>> client = SerpClient(proxy_file="proxies.json", headless=True)
+            >>> client = SerpClient(headless=True)
             >>> client = SerpClient(config=my_config)
         """
         # Handle config - either provided or created from parameters
@@ -94,7 +90,6 @@ class SerpClient:
         else:
             # Build config from parameters
             self._config = SerpConfig(
-                proxy_file=proxy_file or "proxies.json",
                 headless=headless,
                 cache_ttl=cache_ttl,
                 cache_enabled=use_cache,
@@ -104,32 +99,73 @@ class SerpClient:
                 log_level=log_level,
             )
 
-        # Proxy config (legacy compatibility)
-        self._proxy_config: Optional[ProxyConfig] = None
-
         # Apply log level
         set_log_level(self._config.logging.level)
 
         # Cache reference
         self._cache = None if not self._config.cache.enabled else _get_cache()
 
-    def _get_proxy_config(self) -> ProxyConfig:
-        """Get or create proxy configuration."""
-        if self._proxy_config is None:
-            # Check for DataImpulse env vars first
-            gateway = self._config.dataimpulse_gateway or os.getenv("SERP_DATAIMPULSE_GATEWAY")
-            user = self._config.dataimpulse_user or os.getenv("SERP_DATAIMPULSE_USER")
-            pass_ = self._config.dataimpulse_pass or os.getenv("SERP_DATAIMPULSE_PASS")
+    def _get_random_proxy(self) -> Optional[dict]:
+        """Get a random proxy based on configuration.
 
-            if gateway and user and pass_:
-                # Set environment variables for load_config
-                os.environ["SERP_DATAIMPULSE_GATEWAY"] = gateway
-                os.environ["SERP_DATAIMPULSE_USER"] = user
-                os.environ["SERP_DATAIMPULSE_PASS"] = pass_
+        Returns:
+            Proxy dict with 'server', 'username', 'password' keys,
+            or None if no proxy is configured.
 
-            self._proxy_config = load_config(self._config.proxy.proxy_file)
+        DataImpulse format:
+        - Rotating: port 823 (HTTP/HTTPS) or 824 (SOCKS5)
+        - Sticky: ports 10000-20000
+        - Username format: login__cr.country;sessid.123;sessttl.60
+        """
+        proxy_settings = self._config.proxy
+        candidates = []
 
-        return self._proxy_config
+        # If DataImpulse is configured and preferred, use it
+        if proxy_settings.strategy == "dataimpulse_first" and proxy_settings.dataimpulse_gateway:
+            proxy = self._build_dataimpulse_proxy()
+            if proxy:
+                logger.debug(f"Selected DataImpulse proxy: {proxy['server']}")
+                return proxy
+
+        # Add dataimpulse to candidates if configured
+        if proxy_settings.dataimpulse_gateway:
+            proxy = self._build_dataimpulse_proxy()
+            if proxy:
+                candidates.append(proxy)
+
+        # Add custom proxies
+        for proxy_url in proxy_settings.custom_proxies:
+            if not proxy_url:
+                continue
+
+            # Parse user:pass from url if present
+            parsed = urlparse(proxy_url)
+            if parsed.username and parsed.password:
+                auth_part = f"{parsed.username}:{parsed.password}@"
+            elif parsed.username:
+                auth_part = f"{parsed.username}@"
+            else:
+                auth_part = ""
+
+            scheme = parsed.scheme if parsed.scheme else "http"
+            hostname = parsed.hostname or ""
+            port = f":{parsed.port}" if parsed.port else ""
+
+            server = f"{scheme}://{auth_part}{hostname}{port}"
+
+            candidates.append({
+                "server": server,
+                "username": parsed.username,
+                "password": parsed.password,
+            })
+
+        if not candidates:
+            logger.debug("No proxies configured")
+            return None
+
+        proxy = random.choice(candidates)
+        logger.debug(f"Selected proxy: {proxy['server']}")
+        return proxy
 
     async def search(
         self,
@@ -166,8 +202,7 @@ class SerpClient:
         effective_cache = use_cache if use_cache is not None else self._config.cache.enabled
 
         # Determine if proxy should be used
-        proxy_file = self._config.proxy.proxy_file
-        use_proxy = bool(proxy_file) and proxy_file.lower() != "none"
+        use_proxy = self._config.proxy.dataimpulse_gateway or self._config.proxy.custom_proxies
 
         if method == "http" or (method is None and not use_proxy):
             # Use HTTP-based search
@@ -204,7 +239,6 @@ class SerpClient:
                         ))
                     return results
 
-        proxy_config = self._get_proxy_config()
         retry = self._config.retry
 
         sources_to_try = []
@@ -218,7 +252,7 @@ class SerpClient:
         last_error = None
         for src, src_name in sources_to_try:
             for attempt in range(1, retry.max_retries + 1):
-                proxy = proxy_config.get_random_proxy()
+                proxy = self._get_random_proxy()
                 try:
                     results = await _search_impl(
                         query, page_num, proxy, self._config.search.headless, src
@@ -232,7 +266,12 @@ class SerpClient:
                     logger.info(f"{src_name} search successful for query='{query}', page={page_num}")
                     return [SearchResult(**r, source=src) for r in results]
 
-                except (CaptchaError, PageTimeoutError, ParseError) as e:
+                except CaptchaError as e:
+                    # CAPTCHA won't go away by retrying on the same source.
+                    # Break immediately so the next search source is tried.
+                    last_error = e
+                    break
+                except (PageTimeoutError, ParseError) as e:
                     last_error = e
                     if await self._retry_failed(attempt, e, src_name, retry):
                         continue
@@ -275,7 +314,6 @@ class SerpClient:
                         ))
                     return results
 
-        proxy_config = self._get_proxy_config()
         retry = self._config.retry
 
         sources_to_try = []
@@ -289,21 +327,25 @@ class SerpClient:
         last_error = None
         for src, in sources_to_try:
             for attempt in range(1, retry.max_retries + 1):
-                proxy = proxy_config.get_random_proxy()
+                proxy = self._get_random_proxy()
                 try:
                     if src == "google":
-                        from .simple import _search_google_simple
-
                         proxy_url = self._build_proxy_url(proxy) if proxy else None
                         results = await _search_google_simple(
                             query, page_num, proxy_url,
                             {}, use_cache, self._config.cache.ttl
                         )
                     else:
-                        from .simple import _search_simple_impl_bing
-
                         proxy_url = self._build_proxy_url(proxy) if proxy else None
                         results = await _search_simple_impl_bing(query, page_num, proxy_url or "")
+
+                    # Empty results without an error mean the page was loaded
+                    # but no results were found (e.g., consent/bot-detection page).
+                    # Treat as parse failure so retry/failover kicks in.
+                    if not results:
+                        raise ParseError(
+                            f"No results found for query '{query}' on {src} page {page_num}"
+                        )
 
                     if use_cache and self._cache:
                         cache_key = self._cache.make_key(query=query, page_num=page_num, source=src)
@@ -312,6 +354,10 @@ class SerpClient:
                     logger.info(f"search_simple: {src} successful for query='{query}', page={page_num}")
                     return [SearchResult(**r, source=src) for r in results]
 
+                except CaptchaError as e:
+                    # CAPTCHA won't clear on retry; try next source
+                    last_error = e
+                    break
                 except Exception as e:
                     last_error = e
                     if await self._retry_failed(attempt, e, src.upper(), retry):
@@ -325,8 +371,77 @@ class SerpClient:
             raise last_error
         raise ParseError(f"All search attempts failed for query '{query}'")
 
+    def _build_dataimpulse_proxy(self) -> Optional[dict]:
+        """Build DataImpulse proxy dict with proper port and username parameters.
+
+        DataImpulse username format supports parameters:
+        - __cr.country: Country targeting (e.g., __cr.de for Germany)
+        - sessid.123: Session ID for rotating proxy with sticky session (~30 min)
+        - sessttl.60: Session TTL in minutes (1-120) for sticky proxy
+
+        Port selection:
+        - HTTP/HTTPS rotating: 823
+        - SOCKS5 rotating: 824
+        - Sticky (sessttl): 10000-20000 (sessttl required)
+
+        Note: sessid and sessttl are mutually exclusive - sessid is for rotating
+        proxies with session affinity, sessttl is for dedicated sticky proxies.
+        """
+        ps = self._config.proxy
+
+        if not ps.dataimpulse_gateway or not ps.dataimpulse_user:
+            return None
+
+        # Determine if this is a sticky proxy (sessttl) or rotating (sessid or neither)
+        is_sticky = ps.dataimpulse_sessttl is not None
+
+        # Determine port based on proxy type
+        if is_sticky:
+            # Sticky proxy - use port in 10000-20000 range
+            port = 10000  # Default sticky port
+        elif ps.dataimpulse_protocol == "socks5":
+            port = 824  # SOCKS5 rotating
+        else:
+            port = 823  # HTTP/HTTPS rotating
+
+        # Build username with DataImpulse parameter format
+        username_parts = [ps.dataimpulse_user]
+
+        if ps.dataimpulse_country:
+            username_parts.append(f"__cr.{ps.dataimpulse_country}")
+
+        # sessid and sessttl are mutually exclusive
+        if ps.dataimpulse_sessid and not is_sticky:
+            # sessid only makes sense for rotating proxies (not sticky)
+            username_parts.append(f"sessid.{ps.dataimpulse_sessid}")
+
+        if ps.dataimpulse_sessttl:
+            username_parts.append(f"sessttl.{ps.dataimpulse_sessttl}")
+
+        username = ";".join(username_parts)
+
+        # Determine scheme
+        scheme = "socks5" if ps.dataimpulse_protocol == "socks5" else "http"
+
+        # Parse gateway to get hostname
+        from urllib.parse import urlparse
+        parsed = urlparse(ps.dataimpulse_gateway)
+        hostname = parsed.hostname or "gw.dataimpulse.com"
+
+        server = f"{scheme}://{hostname}:{port}"
+
+        return {
+            "server": server,
+            "username": username,
+            "password": ps.dataimpulse_pass or "",
+        }
+
     def _build_proxy_url(self, proxy: Optional[dict]) -> Optional[str]:
-        """Build proxy URL for httpx."""
+        """Build proxy URL for httpx.
+
+        Only includes auth when BOTH username and password are present.
+        DataImpulse requires both for user:pass auth; IP whitelist needs neither.
+        """
         if not proxy:
             return None
         server = proxy.get("server")
@@ -336,14 +451,19 @@ class SerpClient:
         username = proxy.get("username")
         password = proxy.get("password")
 
-        if username:
+        # Only include auth if BOTH username and password are present
+        if username and password:
             from urllib.parse import urlparse
             parsed = urlparse(server)
             scheme = parsed.scheme or "http"
             hostname = parsed.hostname or ""
             port_part = f":{parsed.port}" if parsed.port else ""
-            auth_part = f"{username}:{password}@" if password else f"{username}@"
+            auth_part = f"{username}:{password}@"
             return f"{scheme}://{auth_part}{hostname}{port_part}"
+
+        # No auth - just return server as-is, but ensure it has a scheme
+        if not server.startswith(("http://", "socks5://", "socks4://")):
+            return f"http://{server}"
         return server
 
     async def _retry_failed(
@@ -391,13 +511,12 @@ class SerpClient:
                 logger.debug(f"Cache hit for url='{url}'")
                 return cached
 
-        proxy_config = self._get_proxy_config()
         retry = self._config.retry
 
         RETRYABLE_ERRORS = (CaptchaError, PageTimeoutError, ProxyError, ParseError, TimeoutError, OSError)
 
         for attempt in range(1, retry.max_retries + 1):
-            proxy = proxy_config.get_random_proxy()
+            proxy = self._get_random_proxy()
             logger.debug(f"Fetch attempt {attempt}: proxy={proxy.get('server') if proxy else 'None'}")
 
             try:

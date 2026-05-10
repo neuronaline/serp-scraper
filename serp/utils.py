@@ -14,7 +14,6 @@ import markdownify
 from .config import (
     BING_URL_TEMPLATE,
     USER_AGENTS,
-    load_config,
 )
 
 # Configure module logger
@@ -95,7 +94,7 @@ def _random_user_agent() -> str:
 
 
 def _build_proxy_url(proxy: dict) -> Optional[str]:
-    """Build proper proxy URL with authentication.
+    """Build proper proxy URL with authentication for HTTP clients (httpx).
 
     Args:
         proxy: Proxy dict with 'server', 'username', 'password' keys.
@@ -110,7 +109,9 @@ def _build_proxy_url(proxy: dict) -> Optional[str]:
     username = proxy.get("username")
     password = proxy.get("password")
 
-    if username:
+    # Only include auth if BOTH username and password are present.
+    # DataImpulse requires both for user:pass auth; IP whitelist needs neither.
+    if username and password:
         from urllib.parse import urlparse
         # Parse the server URL to get scheme and hostname
         parsed = urlparse(server)
@@ -123,15 +124,34 @@ def _build_proxy_url(proxy: dict) -> Optional[str]:
         else:
             port_part = ""
 
-        # Build auth part
-        if password:
-            auth_part = f"{username}:{password}@"
-        else:
-            auth_part = f"{username}@"
-
+        auth_part = f"{username}:{password}@"
         return f"{scheme}://{auth_part}{hostname}{port_part}"
 
     return server
+
+
+def _build_chrome_proxy_arg(proxy: dict) -> Optional[str]:
+    """Build proxy argument for Chrome's --proxy-server flag.
+
+    Chrome does NOT support embedded credentials in --proxy-server.
+    Returns just scheme://host:port (no user:pass). Authentication
+    must be handled separately via CDP Fetch.authRequired event.
+
+    Args:
+        proxy: Proxy dict with 'server' key.
+
+    Returns:
+        Proxy URL string without credentials, e.g. 'http://gw.dataimpulse.com:823'
+    """
+    server = proxy.get("server")
+    if not server:
+        return None
+    from urllib.parse import urlparse
+    parsed = urlparse(server)
+    scheme = parsed.scheme or "http"
+    hostname = parsed.hostname or ""
+    port_part = f":{parsed.port}" if parsed.port else ""
+    return f"{scheme}://{hostname}{port_part}"
 
 
 def _wait_random_delay() -> None:
@@ -178,40 +198,6 @@ async def _retry_failed(attempt: int, error: Exception, func_name: str) -> bool:
         await _wait_random_delay_async(attempt)
         return True
     return False
-
-
-async def _fetch_http(url: str, proxy_file: str) -> str:
-    """Simple HTTP fetch using httpx."""
-    config = load_config(proxy_file)
-
-    proxy = config.get_random_proxy()
-    if proxy is None:
-        logger.warning("No proxy configured - proceeding without proxy")
-        proxy_url = None
-    else:
-        # Build proxy URL for httpx with proper protocol handling
-        proxy_url = _build_proxy_url(proxy)
-
-    headers = {
-        "User-Agent": _random_user_agent(),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
-    }
-
-    async with httpx.AsyncClient(
-        proxy=proxy_url,
-        timeout=30.0,
-        follow_redirects=True,
-        headers=headers,
-    ) as client:
-        response = await client.get(url)
-        if response.status_code != 200:
-            raise ProxyError(f"HTTP {response.status_code}")
-
-        return markdownify.markdownify(
-            response.text,
-            heading_style="ATX",
-        )
 
 
 def _extract_bing_real_url(redirect_url: str) -> str:

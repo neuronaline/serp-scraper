@@ -71,20 +71,26 @@ class ProxySettings:
     """Proxy configuration settings.
 
     Attributes:
-        proxy_file: Path to proxies.json file (for backward compatibility)
         custom_proxies: List of custom proxy URLs from environment
-        dataimpulse_gateway: DataImpulse gateway URL
+        dataimpulse_gateway: DataImpulse gateway URL (gw.dataimpulse.com)
         dataimpulse_user: DataImpulse username
         dataimpulse_pass: DataImpulse password
         strategy: Proxy selection strategy ("random" or "dataimpulse_first")
+        dataimpulse_protocol: Proxy protocol ("http" or "socks5")
+        dataimpulse_country: Country code for targeting (e.g., "us", "de", "gb")
+        dataimpulse_sessid: Session ID for sticky proxies (binds IP to session for ~30 min)
+        dataimpulse_sessttl: Session TTL in minutes for sticky proxies (1-120)
     """
 
-    proxy_file: str = "proxies.json"
     custom_proxies: list[str] = field(default_factory=list)
     dataimpulse_gateway: Optional[str] = None
     dataimpulse_user: Optional[str] = None
     dataimpulse_pass: Optional[str] = None
     strategy: str = "dataimpulse_first"  # "random" or "dataimpulse_first"
+    dataimpulse_protocol: str = "http"  # "http" or "socks5"
+    dataimpulse_country: Optional[str] = None  # Country code like "us", "de"
+    dataimpulse_sessid: Optional[str] = None  # Session ID for sticky proxy
+    dataimpulse_sessttl: Optional[int] = None  # Session TTL in minutes (1-120)
 
 
 @dataclass
