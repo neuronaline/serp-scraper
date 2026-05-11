@@ -42,3 +42,4 @@ htmlcov/
 docs/
 sample/
 .kilo/
+publish.sh

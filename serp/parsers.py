@@ -451,9 +451,18 @@ async def _search_impl(
             except Exception:
                 pass
             tab = None
-        # Small delay to allow tab cleanup before stopping browser
+        # Cancel browser background tasks before stopping to prevent
+        # "Task exception was never retrieved" errors from nodriver's
+        # update_targets() background task
         if browser is not None:
             try:
+                # Try to cancel the idle task if it exists
+                if hasattr(browser, '_idle') and browser._idle:
+                    browser._idle.cancel()
+                    try:
+                        await asyncio.wait_for(asyncio.shield(browser._idle), timeout=0.5)
+                    except (asyncio.CancelledError, asyncio.TimeoutError):
+                        pass
                 await asyncio.sleep(0.1)
                 browser.stop()
             except Exception:
@@ -494,9 +503,18 @@ async def _fetch_browser_impl(
             except Exception:
                 pass
             tab = None
-        # Small delay to allow tab cleanup before stopping browser
+        # Cancel browser background tasks before stopping to prevent
+        # "Task exception was never retrieved" errors from nodriver's
+        # update_targets() background task
         if browser is not None:
             try:
+                # Try to cancel the idle task if it exists
+                if hasattr(browser, '_idle') and browser._idle:
+                    browser._idle.cancel()
+                    try:
+                        await asyncio.wait_for(asyncio.shield(browser._idle), timeout=0.5)
+                    except (asyncio.CancelledError, asyncio.TimeoutError):
+                        pass
                 await asyncio.sleep(0.1)
                 browser.stop()
             except Exception:

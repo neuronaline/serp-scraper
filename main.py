@@ -1,9 +1,10 @@
 """Interactive CLI for testing SERP scraper."""
 
-import asyncio
 import sys
 
-from serp import SerpClient, ProxyError, CaptchaError, PageTimeoutError, ParseError
+import nodriver as uc
+
+from serp import SerpClient, GoogleNewsClient, ProxyError, CaptchaError, PageTimeoutError, ParseError
 from serp.config_pydantic import get_default_config
 
 
@@ -113,6 +114,58 @@ async def test_fetch():
         print(f"✗ Error: {e}")
 
 
+async def test_google_news():
+    """Test Google News RSS scraping."""
+    print("\n" + "=" * 50)
+    print("GOOGLE NEWS RSS TEST")
+    print("=" * 50)
+
+    news_search_term = input("Enter news search term: ").strip()
+    if not news_search_term:
+        print("✗ Empty search term")
+        return
+
+    max_input = input("Max results [50]: ").strip()
+    max_results = int(max_input) if max_input else 50
+
+    lang_input = input("Language (tr/en) [tr]: ").strip()
+    language = lang_input if lang_input in ("tr", "en") else "tr"
+
+    country = "TR" if language == "tr" else "US"
+
+    print(f"\n📰 Fetching news for: '{news_search_term}'")
+    print(f"   Language: {language}, Country: {country}")
+    print(f"   Max results: {max_results}")
+    print("-" * 50)
+
+    try:
+        async with GoogleNewsClient(language=language, country=country) as client:
+            news = await client.get_news(news_search_term, max_results=max_results)
+
+        if not news:
+            print("No news found")
+            return
+
+        print(f"✓ Found {len(news)} news articles:\n")
+        for i, r in enumerate(news, 1):
+            print(f"  {i}. {r.title}")
+            print(f"     Source: {r.source}")
+            display_url = r.original_url if r.original_url else r.url
+            print(f"     URL: {display_url}")
+            print(f"     Date: {r.published.strftime('%Y-%m-%d %H:%M') if r.published else 'N/A'}")
+            if r.description:
+                desc_preview = r.description[:80] + "..." if len(r.description) > 80 else r.description
+                print(f"     Desc: {desc_preview}")
+            print()
+
+    except ProxyError as e:
+        print(f"✗ ProxyError: {e}")
+    except PageTimeoutError as e:
+        print(f"✗ PageTimeoutError: {e}")
+    except Exception as e:
+        print(f"✗ Error: {e}")
+
+
 async def interactive_menu():
     """Main interactive menu."""
     print("\n" + "=" * 50)
@@ -120,7 +173,8 @@ async def interactive_menu():
     print("=" * 50)
     print("\n1. SERP Search")
     print("2. URL Fetch")
-    print("3. Exit")
+    print("3. Google News RSS")
+    print("4. Exit")
 
     choice = input("\nSelect option: ").strip()
 
@@ -129,6 +183,8 @@ async def interactive_menu():
     elif choice == "2":
         await test_fetch()
     elif choice == "3":
+        await test_google_news()
+    elif choice == "4":
         print("Goodbye!")
         sys.exit(0)
     else:
@@ -145,7 +201,7 @@ def main():
     print("   Configure via .env file (see .env.example)")
 
     try:
-        asyncio.run(interactive_menu())
+        uc.loop().run_until_complete(interactive_menu())
     except KeyboardInterrupt:
         print("\n\nInterrupted. Goodbye!")
 

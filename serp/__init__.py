@@ -57,6 +57,16 @@ from .config_pydantic import SerpConfig
 # Convenience functions (use default client)
 from .client import quick_search, quick_fetch, quick_search_http
 
+# Google News RSS module
+from .google_news import (
+    GoogleNewsClient,
+    NewsResult,
+    NewsSettings,
+    quick_news,
+    get_default_client as get_google_news_default_client,
+    reset_default_client as reset_google_news_default_client,
+)
+
 # Utilities
 from .utils import (
     ProxyError,
@@ -97,4 +107,11 @@ __all__ = [
     "MAX_RETRIES",
     "TIMEOUT_MS",
     "USER_AGENTS",
+    # Google News RSS
+    "GoogleNewsClient",
+    "NewsResult",
+    "NewsSettings",
+    "quick_news",
+    "get_google_news_default_client",
+    "reset_google_news_default_client",
 ]

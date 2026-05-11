@@ -5,10 +5,44 @@ import tempfile
 import shutil
 import pytest
 
-# Set test environment before importing
-os.environ["SERP_CACHE_ENABLED"] = "true"
-os.environ["SERP_CACHE_DIR"] = ""
-os.environ["SERP_CACHE_TTL"] = ""
+from serp.cache import reset_cache
+from serp.google_news import reset_default_client as reset_google_news_client
+
+
+@pytest.fixture(autouse=True)
+def reset_global_state():
+    """Reset global state before each test to ensure test isolation.
+
+    This fixture runs automatically before each test to prevent
+    state pollution between tests.
+    """
+    # Store original env values
+    original_env = {
+        "SERP_CACHE_ENABLED": os.environ.get("SERP_CACHE_ENABLED"),
+        "SERP_CACHE_DIR": os.environ.get("SERP_CACHE_DIR"),
+        "SERP_CACHE_TTL": os.environ.get("SERP_CACHE_TTL"),
+    }
+
+    # Set test environment
+    os.environ["SERP_CACHE_ENABLED"] = "true"
+    os.environ["SERP_CACHE_DIR"] = ""
+    os.environ["SERP_CACHE_TTL"] = ""
+
+    # Reset global singletons
+    reset_cache()
+    reset_google_news_client()
+
+    yield
+
+    # Restore original env values
+    for key, value in original_env.items():
+        if value is not None:
+            os.environ[key] = value
+        else:
+            os.environ.pop(key, None)
+
+    # Reset again after test
+    reset_cache()
 
 
 @pytest.fixture

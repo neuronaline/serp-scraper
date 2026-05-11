@@ -3,6 +3,7 @@ exclude proxies.json
 exclude .env
 exclude .env.example
 exclude main.py
+exclude publish.sh
 
 # Log dosyalarını engelle
 global-exclude *.log

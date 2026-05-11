@@ -10,6 +10,7 @@ A powerful, async Python library for scraping Google and Bing Search Engine Resu
 ## Features
 
 - **Dual Search Methods**: Browser-based (`nodriver`) and HTTP-based (`httpx`) scraping
+- **Google News RSS**: Scrape news articles via Google News RSS feeds
 - **Proxy Rotation**: DataImpulse and custom proxy support with automatic rotation
 - **Intelligent Caching**: Disk-based caching with configurable TTL
 - **CAPTCHA Handling**: Automatic detection with retry logic and exponential backoff
@@ -82,6 +83,40 @@ async def main():
     # Fetch URL
     content = await quick_fetch("https://example.com")
     print(content[:500])
+
+asyncio.run(main())
+```
+
+### Google News RSS
+
+Scrape news articles using Google News RSS feeds:
+
+```python
+import asyncio
+from serp import GoogleNewsClient
+
+async def main():
+    async with GoogleNewsClient(language="en", country="US") as client:
+        news = await client.get_news("Tesla", max_results=20)
+
+        for r in news:
+            print(f"{r.title}")
+            print(f"  Source: {r.source}")
+            print(f"  URL: {r.url}")
+            print(f"  Date: {r.published}")
+
+asyncio.run(main())
+```
+
+Or use the quick function:
+
+```python
+import asyncio
+from serp import quick_news
+
+async def main():
+    news = await quick_news("Tesla", language="en", country="US", max_results=20)
+    print(f"Found {len(news)} news articles")
 
 asyncio.run(main())
 ```
@@ -309,6 +344,99 @@ content = await quick_fetch("https://example.com")
 
 ---
 
+### GoogleNewsClient
+
+Client for scraping Google News via RSS feeds.
+
+```python
+from serp import GoogleNewsClient
+
+client = GoogleNewsClient(
+    language="tr",        # Language code (tr, en, etc.)
+    country="TR",        # Country code (TR, US, etc.)
+    time_range="d",      # Time range: "h" (hour), "d" (day), "w" (week), "m" (month)
+)
+```
+
+#### Methods
+
+##### `client.get_news(query, max_results=50, queries=None)`
+
+Get news articles for a search term.
+
+**Parameters:**
+- `query` (str): Search term to find news for
+- `max_results` (int): Maximum number of results (default: 50)
+- `queries` (list[str]): Custom list of queries to use
+
+**Returns:**
+- `list[NewsResult]`: List of NewsResult objects
+
+##### `quick_news(query, max_results=50, language="tr", country="TR")`
+
+Convenience function for quick news retrieval.
+
+```python
+from serp import quick_news
+
+news = await quick_news("Tesla", max_results=20, language="en", country="US")
+```
+
+---
+
+### NewsResult
+
+Typed result object for Google News articles.
+
+```python
+from serp import NewsResult
+
+result = NewsResult(
+    title="Tesla announces new model",
+    url="https://news.google.com/rss/articles/...",
+    original_url="https://example.com/article",
+    published=datetime(2026, 5, 11, 8, 0, 0),
+    source="BBC",
+    description="Tesla unveiled...",
+    query="Tesla"
+)
+```
+
+**Attributes:**
+- `title` (str): News headline
+- `url` (str): Google News RSS URL
+- `original_url` (str): Original article URL (extracted from description)
+- `published` (datetime): Publication date
+- `source` (str): News source name (e.g., "BBC", "NTV")
+- `description` (str): News summary/snippet
+- `query` (str): Search query that returned this result
+
+**Methods:**
+- `to_dict()`: Convert to dictionary
+
+---
+
+### NewsSettings
+
+Configuration for Google News scraping.
+
+```python
+from serp import NewsSettings
+
+settings = NewsSettings(
+    language="tr",    # Language code
+    country="TR",     # Country code
+    time_range="d",   # Time range: "h", "d", "w", "m"
+)
+```
+
+**Attributes:**
+- `language` (str): Language code (default: "tr")
+- `country` (str): Country code (default: "TR")
+- `time_range` (str): Time range filter (default: "d")
+
+---
+
 ### Utility Functions
 
 #### `set_log_level(level)`
@@ -356,6 +484,7 @@ python main.py
 Features:
 - SERP Search testing
 - URL Fetch testing
+- Google News RSS testing
 - Proxy status checking
 
 ## Project Structure
@@ -368,6 +497,7 @@ serp-scraper/
 │   ├── config.py            # Configuration constants
 │   ├── config_pydantic.py   # Pydantic-based configuration
 │   ├── types.py             # Type definitions (SearchResult, etc.)
+│   ├── google_news.py       # Google News RSS client
 │   ├── search.py            # Browser-based search
 │   ├── fetch.py             # URL fetch functionality
 │   ├── simple.py            # HTTP-based search
@@ -375,7 +505,9 @@ serp-scraper/
 │   ├── cache.py             # Disk-based caching
 │   └── utils.py             # Utilities and helpers
 ├── tests/                   # Test suite
+│   ├── conftest.py          # Test fixtures
 │   ├── test_serp.py
+│   ├── test_google_news.py
 │   └── test_cache.py
 ├── main.py                  # Interactive CLI tool
 ├── .env.example            # Environment variables template
