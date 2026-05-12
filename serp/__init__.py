@@ -79,6 +79,16 @@ from .utils import (
     set_log_level,
 )
 
+# Output formatting
+from .output_formatter import (
+    OutputFormatter,
+    TextFormatter,
+    JSONFormatter,
+    OutputError,
+    OUTPUT_TEXT,
+    OUTPUT_JSON,
+)
+
 __all__ = [
     # Core class (recommended)
     "SerpClient",
@@ -114,4 +124,11 @@ __all__ = [
     "quick_news",
     "get_google_news_default_client",
     "reset_google_news_default_client",
+    # Output formatting
+    "OutputFormatter",
+    "TextFormatter",
+    "JSONFormatter",
+    "OutputError",
+    "OUTPUT_TEXT",
+    "OUTPUT_JSON",
 ]

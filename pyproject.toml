@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "serp-scraper"
-version = "2.0.1"
-description = "SERP scraper with undetected-chromedriver, proxy rotation, and stealth browsing"
+version = "2.0.2"
+description = "SERP scraper with nodriver, proxy rotation, and stealth browsing"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
@@ -13,7 +13,7 @@ authors = [
 ]
 keywords = [
     "serp", "scraping", "google", "search", "results",
-    "undetected-chromedriver", "selenium", "web-scraping",
+    "nodriver", "selenium", "web-scraping",
     "proxy", "proxy-rotation", "stealth", "browser-automation"
 ]
 classifiers = [
@@ -36,7 +36,7 @@ dependencies = [
     "httpx>=0.25.0",
     "beautifulsoup4>=4.12.0",
     "pydantic>=2.0.0",
-    'python-dotenv>=1.0.0',
+    "python-dotenv>=1.0.0",
 ]
 
 [project.optional-dependencies]
@@ -63,7 +63,6 @@ Repository = "https://github.com/neuronaline/serp-scraper"
 Issues = "https://github.com/neuronaline/serp-scraper/issues"
 Changelog = "https://github.com/neuronaline/serp-scraper/blob/main/CHANGELOG.md"
 
-# Buradaki paket tanımlamasını 'find' içine taşıdık, çakışma giderildi.
 [tool.setuptools]
 package-data = {"serp" = ["py.typed"]}
 
@@ -71,15 +70,15 @@ package-data = {"serp" = ["py.typed"]}
 where = ["."]
 include = ["serp*"]
 exclude = [
-    "tests*", 
-    "docs*", 
-    "sample*", 
-    "venv*", 
-    "env*", 
+    "tests*",
+    "docs*",
+    "sample*",
+    "venv*",
+    "env*",
     ".cache*",
     ".kilo*",
     "main.py",
-    "proxies.json"
+    "proxies.json",
 ]
 
 [tool.pytest.ini_options]

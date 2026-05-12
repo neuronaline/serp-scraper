@@ -1,35 +1,48 @@
 """Interactive CLI for testing SERP scraper."""
 
-import sys
+import argparse
 
 import nodriver as uc
 
 from serp import SerpClient, GoogleNewsClient, ProxyError, CaptchaError, PageTimeoutError, ParseError
 from serp.config_pydantic import get_default_config
+from serp.output_formatter import OutputFormatter, OutputError, OUTPUT_TEXT, OUTPUT_JSON
 
 
-async def test_serp():
+def create_parser() -> argparse.ArgumentParser:
+    """Create argument parser."""
+    parser = argparse.ArgumentParser(
+        description="SERP Scraper Test Tool",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--format", "-f",
+        choices=[OUTPUT_TEXT, OUTPUT_JSON],
+        default=OUTPUT_TEXT,
+        help="Output format (default: text)",
+    )
+    return parser
+
+
+async def test_serp(args: argparse.Namespace) -> int:
     """Test SERP search."""
-    print("\n" + "=" * 50)
-    print("SERP SEARCH TEST")
-    print("=" * 50)
-
     query = input("Enter search query: ").strip()
     if not query:
-        print("✗ Empty query")
-        return
+        print("ERROR: Empty query")
+        return 1
 
     page_input = input("Page number [1]: ").strip()
     page = int(page_input) if page_input else 1
 
-    # Use default config for source and cache settings
     config = get_default_config()
-    source = config.search.source  # None means auto (google first, bing fallback)
+    source = config.search.source
     use_cache = config.cache.enabled
 
     source_name = "Google" if source == "google" else ("Bing" if source == "bing" else "Auto (Google → Bing)")
-    print(f"\n🔍 Searching [{source_name}]: '{query}' (page {page})")
-    print(f"   (source and cache configured via .env)")
+    mode = args.format
+
+    print(f"\nSearching [{source_name}]: '{query}' (page {page})")
+    print(f"Output format: {mode}")
     print("-" * 50)
 
     try:
@@ -42,89 +55,167 @@ async def test_serp():
             )
 
         if not results:
-            print("No results found")
-            return
+            if mode == OUTPUT_JSON:
+                output = OutputFormatter.format_search_results(
+                    results=[],
+                    mode=mode,
+                    query=query,
+                    source=source,
+                )
+                print(output)
+            else:
+                print("No results found")
+            return 0
 
-        print(f"✓ Found {len(results)} results:\n")
-        for r in results:
-            print(f"  {r.rank}. {r.title}")
-            print(f"     URL: {r.url}")
-            if r.description:
-                print(f"     Desc: {r.description}")
-            print()
+        output = OutputFormatter.format_search_results(
+            results=results,
+            mode=mode,
+            query=query,
+            source=source,
+        )
+        print(output)
+        return 0
 
     except ProxyError as e:
-        print(f"✗ ProxyError: {e}")
+        error = OutputError(code="PROXY_ERROR", message=str(e))
+        output = OutputFormatter.format_search_results(
+            results=[],
+            mode=mode,
+            query=query,
+            source=source,
+            error=error,
+        )
+        print(output)
+        return 1
     except CaptchaError as e:
-        print(f"✗ CaptchaError: {e}")
+        error = OutputError(code="CAPTCHA_ERROR", message=str(e))
+        output = OutputFormatter.format_search_results(
+            results=[],
+            mode=mode,
+            query=query,
+            source=source,
+            error=error,
+        )
+        print(output)
+        return 1
     except PageTimeoutError as e:
-        print(f"✗ PageTimeoutError: {e}")
+        error = OutputError(code="TIMEOUT_ERROR", message=str(e))
+        output = OutputFormatter.format_search_results(
+            results=[],
+            mode=mode,
+            query=query,
+            source=source,
+            error=error,
+        )
+        print(output)
+        return 1
     except ParseError as e:
-        print(f"✗ ParseError: {e}")
+        error = OutputError(code="PARSE_ERROR", message=str(e))
+        output = OutputFormatter.format_search_results(
+            results=[],
+            mode=mode,
+            query=query,
+            source=source,
+            error=error,
+        )
+        print(output)
+        return 1
     except Exception as e:
-        print(f"✗ Error: {e}")
+        error = OutputError(code="UNKNOWN_ERROR", message=str(e))
+        output = OutputFormatter.format_search_results(
+            results=[],
+            mode=mode,
+            query=query,
+            source=source,
+            error=error,
+        )
+        print(output)
+        return 1
 
 
-async def test_fetch():
+async def test_fetch(args: argparse.Namespace) -> int:
     """Test URL fetching."""
-    print("\n" + "=" * 50)
-    print("URL FETCH TEST")
-    print("=" * 50)
-
     url = input("Enter URL to fetch: ").strip()
     if not url:
-        print("✗ Empty URL")
-        return
+        print("ERROR: Empty URL")
+        return 1
 
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
 
-    # Use default config
     config = get_default_config()
     use_cache = config.cache.enabled
+    mode = args.format
 
-    print(f"\n📄 Fetching: {url}")
-    print(f"   (cache configured via .env: {use_cache})")
+    print(f"\nFetching: {url}")
+    print(f"Output format: {mode}")
     print("-" * 50)
 
     try:
         async with SerpClient(config=config) as client:
-            # HTTP first (bs4/httpx), fall back to browser only on failure
             content = await client.fetch(url, use_cache=use_cache, prefer_browser=False)
 
-        # Filter out empty/whitespace-only lines for preview
-        lines = [l for l in content.split("\n") if l.strip()]
-        preview_lines = lines[:30] if lines else ["(no content)"]
-        preview = "\n".join(preview_lines)
-
-        print(f"✓ Fetched {len(content)} characters\n")
-        print("Preview (first 30 lines):")
-        print("-" * 50)
-        print(preview)
-
-        if len(lines) > 30:
-            print(f"\n... ({len(lines) - 30} more lines)")
+        output = OutputFormatter.format_fetch(
+            content=content,
+            url=url,
+            char_count=len(content),
+            mode=mode,
+        )
+        print(output)
+        return 0
 
     except ProxyError as e:
-        print(f"✗ ProxyError: {e}")
+        error = OutputError(code="PROXY_ERROR", message=str(e))
+        output = OutputFormatter.format_fetch(
+            content="",
+            url=url,
+            char_count=0,
+            mode=mode,
+            error=error,
+        )
+        print(output)
+        return 1
     except CaptchaError as e:
-        print(f"✗ CaptchaError: {e}")
+        error = OutputError(code="CAPTCHA_ERROR", message=str(e))
+        output = OutputFormatter.format_fetch(
+            content="",
+            url=url,
+            char_count=0,
+            mode=mode,
+            error=error,
+        )
+        print(output)
+        return 1
     except PageTimeoutError as e:
-        print(f"✗ PageTimeoutError: {e}")
+        error = OutputError(code="TIMEOUT_ERROR", message=str(e))
+        output = OutputFormatter.format_fetch(
+            content="",
+            url=url,
+            char_count=0,
+            mode=mode,
+            error=error,
+        )
+        print(output)
+        return 1
     except Exception as e:
-        print(f"✗ Error: {e}")
+        error = OutputError(code="UNKNOWN_ERROR", message=str(e))
+        output = OutputFormatter.format_fetch(
+            content="",
+            url=url,
+            char_count=0,
+            mode=mode,
+            error=error,
+        )
+        print(output)
+        return 1
 
 
-async def test_google_news():
+async def test_google_news(args: argparse.Namespace) -> int:
     """Test Google News RSS scraping."""
-    print("\n" + "=" * 50)
-    print("GOOGLE NEWS RSS TEST")
-    print("=" * 50)
-
     news_search_term = input("Enter news search term: ").strip()
     if not news_search_term:
-        print("✗ Empty search term")
-        return
+        print("ERROR: Empty search term")
+        return 1
 
     max_input = input("Max results [50]: ").strip()
     max_results = int(max_input) if max_input else 50
@@ -133,10 +224,12 @@ async def test_google_news():
     language = lang_input if lang_input in ("tr", "en") else "tr"
 
     country = "TR" if language == "tr" else "US"
+    mode = args.format
 
-    print(f"\n📰 Fetching news for: '{news_search_term}'")
-    print(f"   Language: {language}, Country: {country}")
-    print(f"   Max results: {max_results}")
+    print(f"\nFetching news for: '{news_search_term}'")
+    print(f"Language: {language}, Country: {country}")
+    print(f"Max results: {max_results}")
+    print(f"Output format: {mode}")
     print("-" * 50)
 
     try:
@@ -144,34 +237,73 @@ async def test_google_news():
             news = await client.get_news(news_search_term, max_results=max_results)
 
         if not news:
-            print("No news found")
-            return
+            if mode == OUTPUT_JSON:
+                output = OutputFormatter.format_news(
+                    news_list=[],
+                    search_term=news_search_term,
+                    language=language,
+                    country=country,
+                    mode=mode,
+                )
+                print(output)
+            else:
+                print("No news found")
+            return 0
 
-        print(f"✓ Found {len(news)} news articles:\n")
-        for i, r in enumerate(news, 1):
-            print(f"  {i}. {r.title}")
-            print(f"     Source: {r.source}")
-            display_url = r.original_url if r.original_url else r.url
-            print(f"     URL: {display_url}")
-            print(f"     Date: {r.published.strftime('%Y-%m-%d %H:%M') if r.published else 'N/A'}")
-            if r.description:
-                desc_preview = r.description[:80] + "..." if len(r.description) > 80 else r.description
-                print(f"     Desc: {desc_preview}")
-            print()
+        output = OutputFormatter.format_news(
+            news_list=news,
+            search_term=news_search_term,
+            language=language,
+            country=country,
+            mode=mode,
+        )
+        print(output)
+        return 0
 
     except ProxyError as e:
-        print(f"✗ ProxyError: {e}")
+        error = OutputError(code="PROXY_ERROR", message=str(e))
+        output = OutputFormatter.format_news(
+            news_list=[],
+            search_term=news_search_term,
+            language=language,
+            country=country,
+            mode=mode,
+            error=error,
+        )
+        print(output)
+        return 1
     except PageTimeoutError as e:
-        print(f"✗ PageTimeoutError: {e}")
+        error = OutputError(code="TIMEOUT_ERROR", message=str(e))
+        output = OutputFormatter.format_news(
+            news_list=[],
+            search_term=news_search_term,
+            language=language,
+            country=country,
+            mode=mode,
+            error=error,
+        )
+        print(output)
+        return 1
     except Exception as e:
-        print(f"✗ Error: {e}")
+        error = OutputError(code="UNKNOWN_ERROR", message=str(e))
+        output = OutputFormatter.format_news(
+            news_list=[],
+            search_term=news_search_term,
+            language=language,
+            country=country,
+            mode=mode,
+            error=error,
+        )
+        print(output)
+        return 1
 
 
-async def interactive_menu():
+async def interactive_menu(args: argparse.Namespace) -> None:
     """Main interactive menu."""
     print("\n" + "=" * 50)
     print("  SERP SCRAPER - TEST TOOL")
     print("=" * 50)
+    print(f"\nOutput format: {args.format}")
     print("\n1. SERP Search")
     print("2. URL Fetch")
     print("3. Google News RSS")
@@ -179,30 +311,38 @@ async def interactive_menu():
 
     choice = input("\nSelect option: ").strip()
 
+    exit_code = 0
     if choice == "1":
-        await test_serp()
+        exit_code = await test_serp(args)
     elif choice == "2":
-        await test_fetch()
+        exit_code = await test_fetch(args)
     elif choice == "3":
-        await test_google_news()
+        exit_code = await test_google_news(args)
     elif choice == "4":
         print("Goodbye!")
         sys.exit(0)
     else:
         print("Invalid option")
 
-    # Continue
+    if exit_code != 0:
+        input("\nPress Enter to continue...")
+
     input("\nPress Enter to continue...")
-    await interactive_menu()
+    await interactive_menu(args)
 
 
-def main():
+def main() -> None:
     """Entry point."""
-    print("\n🔧 SERP Scraper Test Tool")
-    print("   Configure via .env file (see .env.example)")
+    parser = create_parser()
+    args = parser.parse_args()
+
+    print("\n" + "=" * 50)
+    print("  SERP SCRAPER - TEST TOOL")
+    print("=" * 50)
+    print("\nConfigure via .env file (see .env.example)")
 
     try:
-        uc.loop().run_until_complete(interactive_menu())
+        uc.loop().run_until_complete(interactive_menu(args))
     except KeyboardInterrupt:
         print("\n\nInterrupted. Goodbye!")
 

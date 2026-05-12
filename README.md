@@ -18,6 +18,7 @@ A powerful, async Python library for scraping Google and Bing Search Engine Resu
 - **Async/Await**: Modern asynchronous API design
 - **Environment Config**: `.env` file support for configuration
 - **CLI Tool**: Interactive command-line interface for testing
+- **Dual Output Format**: Text (human-readable) and JSON (LLM-friendly) output
 
 ## Installation
 
@@ -437,6 +438,51 @@ settings = NewsSettings(
 
 ---
 
+### OutputFormatter
+
+Structured output formatting for CLI tools and LLM integration.
+
+```python
+from serp import OutputFormatter, OUTPUT_TEXT, OUTPUT_JSON
+
+# Format search results
+output = OutputFormatter.format_search_results(
+    results=search_results,
+    mode=OUTPUT_JSON,
+    query="python tutorial",
+    source="google",
+)
+
+# Format news results
+output = OutputFormatter.format_news(
+    news_list=news_results,
+    mode=OUTPUT_JSON,
+    search_term="Tesla",
+    language="en",
+    country="US",
+)
+
+# Format fetch results
+output = OutputFormatter.format_fetch(
+    content=page_content,
+    url="https://example.com",
+    char_count=len(page_content),
+    mode=OUTPUT_JSON,
+)
+```
+
+**Constants:**
+- `OUTPUT_TEXT`: Text output mode (human-readable)
+- `OUTPUT_JSON`: JSON output mode (machine-parseable)
+
+**Classes:**
+- `OutputFormatter`: Main interface with static `format_*` methods
+- `TextFormatter`: Human-readable text formatting
+- `JSONFormatter`: JSON output formatting
+- `OutputError`: Structured error representation
+
+---
+
 ### Utility Functions
 
 #### `set_log_level(level)`
@@ -479,12 +525,15 @@ The package includes an interactive CLI tool for testing:
 
 ```bash
 python main.py
+python main.py --format json  # JSON output for LLM integration
+python main.py -f text        # Human-readable text output (default)
 ```
 
 Features:
 - SERP Search testing
 - URL Fetch testing
 - Google News RSS testing
+- Dual output format (text/JSON)
 - Proxy status checking
 
 ## Project Structure
@@ -503,6 +552,7 @@ serp-scraper/
 │   ├── simple.py            # HTTP-based search
 │   ├── parsers.py           # Result parsing logic
 │   ├── cache.py             # Disk-based caching
+│   ├── output_formatter.py  # Text and JSON output formatting
 │   └── utils.py             # Utilities and helpers
 ├── tests/                   # Test suite
 │   ├── conftest.py          # Test fixtures

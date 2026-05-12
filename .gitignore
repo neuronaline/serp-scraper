@@ -43,3 +43,4 @@ docs/
 sample/
 .kilo/
 publish.sh
+.ruff_cache/
