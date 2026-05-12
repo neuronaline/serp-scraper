@@ -50,7 +50,7 @@ async def test_serp():
             print(f"  {r.rank}. {r.title}")
             print(f"     URL: {r.url}")
             if r.description:
-                print(f"     Desc: {r.description[:100]}...")
+                print(f"     Desc: {r.description}")
             print()
 
     except ProxyError as e:
@@ -89,7 +89,8 @@ async def test_fetch():
 
     try:
         async with SerpClient(config=config) as client:
-            content = await client.fetch(url, use_cache=use_cache)
+            # HTTP first (bs4/httpx), fall back to browser only on failure
+            content = await client.fetch(url, use_cache=use_cache, prefer_browser=False)
 
         # Filter out empty/whitespace-only lines for preview
         lines = [l for l in content.split("\n") if l.strip()]

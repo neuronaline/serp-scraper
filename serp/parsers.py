@@ -35,13 +35,15 @@ def _check_captcha(url: str, page_source: str = "") -> bool:
         "sorry/app/before",
         "support.google.com/recaptcha",
         "support.microsoft.com/captcha",
-        "detected unusual traffic",
-        "enable javascript",
     ]
     content_lower = page_source.lower()
     has_captcha_content = any(pattern in content_lower for pattern in captcha_patterns)
-    has_explicit_captcha = "captcha" in content_lower and (
-        "/captcha/" in content_lower or "recaptcha" in content_lower or "hcaptcha" in content_lower
+    # Only flag as captcha if it's an actual captcha service, not just the word
+    has_explicit_captcha = (
+        "recaptcha" in content_lower
+        or "hcaptcha" in content_lower
+        or "cf-challenge" in content_lower
+        or ("captcha" in content_lower and "/captcha/" in content_lower)
     )
     return has_captcha_content or has_explicit_captcha
 
@@ -451,22 +453,42 @@ async def _search_impl(
             except Exception:
                 pass
             tab = None
-        # Cancel browser background tasks before stopping to prevent
-        # "Task exception was never retrieved" errors from nodriver's
-        # update_targets() background task
-        if browser is not None:
+
+        # Cancel background tasks and stop browser cleanly
+        try:
+            await _cleanup_browser(browser)
+        except Exception:
+            pass
+
+
+async def _cleanup_browser(browser) -> None:
+    """Cancel nodriver background tasks and stop browser cleanly.
+
+    Nodriver runs internal background tasks (e.g., update_targets) that can
+    produce "Task exception was never retrieved" warnings if not properly
+    cancelled before browser.stop(). This is a known issue with nodriver's
+    CDP connection management.
+
+    Task attribute names (_idle, _update_task) are private API - iterate
+    over known names to future-proof against nodriver version changes.
+    """
+    if browser is None:
+        return
+
+    # Known nodriver internal task attribute names
+    task_attr_names = ('_idle', '_update_task')
+
+    for attr_name in task_attr_names:
+        task = getattr(browser, attr_name, None)
+        if task:
+            task.cancel()
             try:
-                # Try to cancel the idle task if it exists
-                if hasattr(browser, '_idle') and browser._idle:
-                    browser._idle.cancel()
-                    try:
-                        await asyncio.wait_for(asyncio.shield(browser._idle), timeout=0.5)
-                    except (asyncio.CancelledError, asyncio.TimeoutError):
-                        pass
-                await asyncio.sleep(0.1)
-                browser.stop()
-            except Exception:
+                await asyncio.wait_for(asyncio.shield(task), timeout=0.5)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
+
+    await asyncio.sleep(0.25)
+    browser.stop()
 
 
 async def _fetch_browser_impl(
@@ -503,19 +525,9 @@ async def _fetch_browser_impl(
             except Exception:
                 pass
             tab = None
-        # Cancel browser background tasks before stopping to prevent
-        # "Task exception was never retrieved" errors from nodriver's
-        # update_targets() background task
-        if browser is not None:
-            try:
-                # Try to cancel the idle task if it exists
-                if hasattr(browser, '_idle') and browser._idle:
-                    browser._idle.cancel()
-                    try:
-                        await asyncio.wait_for(asyncio.shield(browser._idle), timeout=0.5)
-                    except (asyncio.CancelledError, asyncio.TimeoutError):
-                        pass
-                await asyncio.sleep(0.1)
-                browser.stop()
-            except Exception:
-                pass
+
+        # Cancel background tasks and stop browser cleanly
+        try:
+            await _cleanup_browser(browser)
+        except Exception:
+            pass

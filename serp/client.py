@@ -523,12 +523,8 @@ class SerpClient:
                 if prefer_browser:
                     result = await _fetch_browser_impl(url, proxy, self._config.search.headless)
                 else:
-                    # Try HTTP first
-                    try:
-                        result = await self._fetch_http_impl(url, proxy)
-                    except Exception as e:
-                        logger.debug(f"HTTP fetch failed, falling back to browser: {e}")
-                        result = await _fetch_browser_impl(url, proxy, self._config.search.headless)
+                    # HTTP first, browser fallback on failure
+                    result = await self.fetch_with_fallback(url, use_cache=False)
 
                 if effective_cache and self._cache:
                     cache_key = self._cache.make_key(url=url)
@@ -541,6 +537,80 @@ class SerpClient:
                     if await self._retry_failed(attempt, e, "Fetch", retry):
                         continue
                 raise
+
+        raise ProxyError(f"All {retry.max_retries} fetch attempts failed")
+
+    async def fetch_with_fallback(
+        self,
+        url: str,
+        use_cache: Optional[bool] = None,
+    ) -> str:
+        """Fetch a URL using HTTP first, falling back to browser on failure.
+
+        This method implements the HTTP-first-then-browser fallback pattern:
+        1. Try HTTP fetch (httpx)
+        2. On any retryable error, immediately fall back to browser (nodriver)
+        3. Cache the successful result
+
+        Args:
+            url: Target URL
+            use_cache: Whether to use cache. None uses client default.
+
+        Returns:
+            Page content as Markdown string
+
+        Raises:
+            ProxyError: All proxies failed
+            PageTimeoutError: Page load timeout
+        """
+        effective_cache = use_cache if use_cache is not None else self._config.cache.enabled
+
+        if effective_cache and self._cache:
+            cache_key = self._cache.make_key(url=url)
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                logger.debug(f"Cache hit for url='{url}'")
+                return cached
+
+        retry = self._config.retry
+
+        # Errors that trigger browser fallback
+        FALLBACK_ERRORS = (CaptchaError, PageTimeoutError, ProxyError, ParseError, TimeoutError, ConnectionError)
+
+        for attempt in range(1, retry.max_retries + 1):
+            proxy = self._get_random_proxy()
+            logger.debug(f"Fetch with fallback attempt {attempt}: proxy={proxy.get('server') if proxy else 'None'}")
+
+            try:
+                # Phase 1: Try HTTP fetch
+                result = await self._fetch_http_impl(url, proxy)
+
+                # Validate response - empty/minimal content suggests blocked page
+                if not result or len(result) < 50:
+                    logger.debug(f"HTTP returned minimal content ({len(result) if result else 0} chars), falling back to browser")
+                    raise ParseError("Empty or minimal content received from HTTP")
+
+            except FALLBACK_ERRORS as e:
+                # Phase 2: Immediate fallback to browser
+                logger.debug(f"HTTP fetch failed (attempt {attempt}), falling back to browser: {e}")
+                try:
+                    result = await _fetch_browser_impl(url, proxy, self._config.search.headless)
+                except Exception as browser_error:
+                    # Browser also failed - retry whole cycle
+                    if attempt < retry.max_retries:
+                        if await self._retry_failed(attempt, browser_error, "Fetch", retry):
+                            continue
+                    raise browser_error
+
+                # Browser succeeded - return without caching fallback result
+                return result
+
+            # Cache successful HTTP result (only when HTTP succeeds directly)
+            if effective_cache and self._cache:
+                cache_key = self._cache.make_key(url=url)
+                self._cache.set(cache_key, result, self._config.cache.ttl)
+
+            return result
 
         raise ProxyError(f"All {retry.max_retries} fetch attempts failed")
 
