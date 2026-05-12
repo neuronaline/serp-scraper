@@ -19,6 +19,7 @@ A powerful, async Python library for scraping Google and Bing Search Engine Resu
 - **Environment Config**: `.env` file support for configuration
 - **CLI Tool**: Interactive command-line interface for testing
 - **Dual Output Format**: Text (human-readable) and JSON (LLM-friendly) output
+- **REST API**: Optional FastAPI-based REST API with rate limiting and authentication
 
 ## Installation
 
@@ -41,6 +42,7 @@ pip install -e .
 ```bash
 pip install serp-scraper[dev]  # With dev tools
 pip install serp-scraper[test] # With test dependencies
+pip install serp-scraper[api]  # With REST API (FastAPI)
 ```
 
 ## Requirements
@@ -536,6 +538,41 @@ Features:
 - Dual output format (text/JSON)
 - Proxy status checking
 
+## REST API (Optional)
+
+The package includes an optional FastAPI-based REST API for programmatic access.
+
+### Installation
+
+```bash
+pip install serp-scraper[api]
+```
+
+### Running the API
+
+```bash
+python -m api.main
+# Or with uvicorn directly:
+uvicorn api.main:app --host 0.0.0.0 --port 8000
+```
+
+### API Endpoints
+
+- `GET /health` - Health check
+- `POST /api/v1/search` - Search SERP results
+- `POST /api/v1/fetch` - Fetch URL content
+- `POST /api/v1/news` - Get Google News articles
+- `GET /api/v1/keys` - List API keys (admin)
+- `POST /api/v1/keys` - Create API key (admin)
+
+### Authentication
+
+The API uses API key authentication. Set the `X-API-Key` header in your requests.
+
+### Rate Limiting
+
+The API includes rate limiting middleware to prevent abuse.
+
 ## Project Structure
 
 ```
@@ -554,11 +591,31 @@ serp-scraper/
 │   ├── cache.py             # Disk-based caching
 │   ├── output_formatter.py  # Text and JSON output formatting
 │   └── utils.py             # Utilities and helpers
+├── api/                     # REST API (optional)
+│   ├── main.py              # FastAPI application
+│   ├── config.py            # API configuration
+│   ├── deps.py              # Dependencies
+│   ├── exceptions.py        # Custom exceptions
+│   ├── models/              # Pydantic models
+│   │   ├── requests.py      # Request models
+│   │   └── responses.py     # Response models
+│   ├── routers/             # API routes
+│   │   ├── __init__.py
+│   │   ├── health.py        # Health check endpoint
+│   │   ├── search.py        # Search endpoints
+│   │   ├── fetch.py         # Fetch endpoints
+│   │   └── news.py          # News endpoints
+│   ├── middleware/          # Middleware
+│   │   ├── rate_limit.py    # Rate limiting
+│   │   └── logging_middleware.py
+│   └── cli/                 # API CLI tools
+│       └── keys.py          # API key management
 ├── tests/                   # Test suite
 │   ├── conftest.py          # Test fixtures
 │   ├── test_serp.py
 │   ├── test_google_news.py
-│   └── test_cache.py
+│   ├── test_cache.py
+│   └── api/                 # API tests
 ├── main.py                  # Interactive CLI tool
 ├── .env.example            # Environment variables template
 ├── pyproject.toml          # Project metadata
@@ -635,12 +692,23 @@ The library provides specific exceptions for different failure modes:
 
 | Package | Version | Purpose |
 |---------|---------|---------|
-| nodriver | >=4.0.0 | Stealth Chrome automation |
+| nodriver | >=0.50.0 | Stealth Chrome automation |
 | markdownify | >=0.12.0 | HTML to Markdown conversion |
 | httpx | >=0.25.0 | Async HTTP client |
 | beautifulsoup4 | >=4.12.0 | HTML parsing |
 | pydantic | >=2.0.0 | Configuration validation |
+| pydantic-settings | >=2.0.0 | Pydantic settings integration |
 | python-dotenv | >=1.0.0 | .env file support |
+
+## API Dependencies (Optional)
+
+Install with `pip install serp-scraper[api]` for REST API support:
+
+| Package | Version | Purpose |
+|---------|---------|---------|
+| fastapi | >=0.100.0 | REST API framework |
+| uvicorn | >=0.23.0 | ASGI server |
+| passlib | >=1.7.4 | Password hashing |
 
 ## Development Dependencies
 

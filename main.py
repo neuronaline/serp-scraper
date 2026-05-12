@@ -1,6 +1,7 @@
 """Interactive CLI for testing SERP scraper."""
 
 import argparse
+import sys
 
 import nodriver as uc
 

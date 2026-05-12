@@ -28,6 +28,7 @@ Thumbs.db
 # Project specific
 proxies.json
 *.log
+logs/
 
 # Test
 .pytest_cache/
