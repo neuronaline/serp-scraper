@@ -48,6 +48,33 @@ def _check_captcha(url: str, page_source: str = "") -> bool:
     return has_captcha_content or has_explicit_captcha
 
 
+def _check_snap_chromium() -> bool:
+    """Check if the system Chromium is snap-packaged.
+
+    Snap-packaged browsers have limitations with proxy settings and
+    may not honor --proxy-server properly.
+    """
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["which", "chromium"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            path = result.stdout.strip()
+            if "/snap/" in path:
+                logger.warning(
+                    f"Snap Chromium detected at {path}. "
+                    "Snap browsers may not honor proxy settings properly. "
+                    "Consider using system Chromium or Google Chrome instead."
+                )
+                return True
+    except Exception:
+        pass
+    return False
+
+
 async def _create_browser(
     proxy: Optional[dict] = None,
     headless: bool = False,
@@ -61,11 +88,18 @@ async def _create_browser(
     does not support user:pass@host format. Authentication is handled
     separately via CDP Fetch.authRequired event in _setup_proxy_auth().
     """
+    # Check for snap chromium before starting
+    _check_snap_chromium()
+
     browser_args = [
         "--disable-dev-shm-usage",
         "--disable-blink-features=AutomationControlled",
         "--disable-extensions",
         "--disable-infobars",
+        # WebRTC leak prevention (from documentation)
+        "--disable-webrtc",
+        "--disable-features=WebRtcHideLocalIpsWithMdns",
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
     ]
 
     if proxy:
@@ -107,11 +141,18 @@ async def _create_browser_with_proxy_auth(
     """
     import os
 
+    # Check for snap chromium before starting
+    _check_snap_chromium()
+
     browser_args = [
         "--disable-dev-shm-usage",
         "--disable-blink-features=AutomationControlled",
         "--disable-extensions",
         "--disable-infobars",
+        # WebRTC leak prevention (from documentation)
+        "--disable-webrtc",
+        "--disable-features=WebRtcHideLocalIpsWithMdns",
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
     ]
 
     # Proxy without embedded credentials
