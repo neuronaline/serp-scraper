@@ -14,7 +14,6 @@ from .utils import (
     MAX_RETRIES,
     _random_user_agent,
     _extract_bing_real_url,
-    _wait_random_delay_async,
     logger,
 )
 
@@ -23,7 +22,6 @@ async def _search_google_simple(
     query: str,
     page_num: int,
     proxy_url: Optional[str],
-    headers: dict,
     use_cache: bool,
     cache_ttl: int,
 ) -> list[dict]:
@@ -33,7 +31,6 @@ async def _search_google_simple(
     start = (page_num - 1) * 10
     google_url = f"https://www.google.com/search?q={query}&start={start}"
 
-    # Merge provided headers with defaults, ensuring User-Agent is set
     request_headers = {
         "User-Agent": _random_user_agent(),
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -42,8 +39,6 @@ async def _search_google_simple(
         "Connection": "keep-alive",
         "Upgrade-Insecure-Requests": "1",
     }
-    if headers:
-        request_headers.update(headers)
 
     async with httpx.AsyncClient(
         proxy=proxy_url,

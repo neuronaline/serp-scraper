@@ -126,8 +126,6 @@ __all__ = [
     "reset_google_news_default_client",
     # Output formatting
     "OutputFormatter",
-    "TextFormatter",
-    "JSONFormatter",
     "OutputError",
     "OUTPUT_TEXT",
     "OUTPUT_JSON",

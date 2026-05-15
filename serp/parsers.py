@@ -48,11 +48,50 @@ def _check_captcha(url: str, page_source: str = "") -> bool:
     return has_captcha_content or has_explicit_captcha
 
 
-def _check_snap_chromium() -> bool:
-    """Check if the system Chromium is snap-packaged.
+def _find_system_chrome_path() -> Optional[str]:
+    """Find system Chrome/Chromium executable path.
 
-    Snap-packaged browsers have limitations with proxy settings and
-    may not honor --proxy-server properly.
+    Checks common installation paths and returns the first valid one found.
+    Snap chromium is avoided due to proxy configuration limitations.
+    """
+    import os
+    import subprocess
+
+    # Order matters: prefer Google Chrome over system Chromium
+    # Also check CHROME_PATH env var if set
+    chrome_path = os.environ.get("CHROME_PATH")
+    if chrome_path and os.path.isfile(chrome_path) and os.access(chrome_path, os.X_OK):
+        return chrome_path
+
+    # Common Chrome/Chromium installation paths
+    candidates = [
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/opt/google/chrome/chrome",
+        # Snap paths (not recommended but check last)
+        "/snap/bin/chromium",
+    ]
+
+    for path in candidates:
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            if "/snap/" in path:
+                logger.warning(
+                    f"Snap Chromium detected at {path}. "
+                    "Snap browsers may not honor proxy settings properly. "
+                    "Set CHROME_PATH to a system Chrome/Chromium path to suppress this warning."
+                )
+            return path
+
+    return None
+
+
+def _check_snap_chromium() -> bool:
+    """Check if the default 'chromium' command is snap-packaged.
+
+    DEPRECATED: This function is kept for backward compatibility but
+    is no longer used. Use _find_system_chrome_path() instead.
     """
     import subprocess
     try:
@@ -67,7 +106,7 @@ def _check_snap_chromium() -> bool:
                 logger.warning(
                     f"Snap Chromium detected at {path}. "
                     "Snap browsers may not honor proxy settings properly. "
-                    "Consider using system Chromium or Google Chrome instead."
+                    "Set CHROME_PATH to a system Chrome/Chromium path to suppress this warning."
                 )
                 return True
     except Exception:
@@ -88,12 +127,8 @@ async def _create_browser(
     does not support user:pass@host format. Authentication is handled
     separately via CDP Fetch.authRequired event in _setup_proxy_auth().
     """
-    # Check for snap chromium before starting
-    _check_snap_chromium()
-
     browser_args = [
         "--disable-dev-shm-usage",
-        "--disable-blink-features=AutomationControlled",
         "--disable-extensions",
         "--disable-infobars",
         # WebRTC leak prevention (from documentation)
@@ -116,10 +151,14 @@ async def _create_browser(
         # sandbox=False is essential for Linux/root environments.
         sandbox = os.geteuid() != 0  # True = sandbox enabled (non-root), False = disabled (root)
 
+        # Find system Chrome to avoid snap chromium issues
+        browser_executable = _find_system_chrome_path()
+
         browser = await uc.start(
             headless=headless,
             browser_args=browser_args,
             sandbox=sandbox,
+            browser_executable_path=browser_executable,
         )
         return browser
     except Exception as e:
@@ -141,12 +180,8 @@ async def _create_browser_with_proxy_auth(
     """
     import os
 
-    # Check for snap chromium before starting
-    _check_snap_chromium()
-
     browser_args = [
         "--disable-dev-shm-usage",
-        "--disable-blink-features=AutomationControlled",
         "--disable-extensions",
         "--disable-infobars",
         # WebRTC leak prevention (from documentation)
@@ -162,10 +197,15 @@ async def _create_browser_with_proxy_auth(
 
     try:
         sandbox = os.geteuid() != 0
+
+        # Find system Chrome to avoid snap chromium issues
+        browser_executable = _find_system_chrome_path()
+
         browser = await uc.start(
             headless=headless,
             browser_args=browser_args,
             sandbox=sandbox,
+            browser_executable_path=browser_executable,
         )
         return browser
     except Exception as e:

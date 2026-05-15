@@ -351,25 +351,6 @@ class TestUtilityFunctions:
         assert len(ua) > 0
         assert ua in USER_AGENTS
 
-    def test_build_proxy_url_with_auth(self):
-        """Test building proxy URL with authentication."""
-        from serp.utils import _build_proxy_url
-        proxy = {
-            "server": "http://gw.dataimpulse.com:823",
-            "username": "user",
-            "password": "pass",
-        }
-        result = _build_proxy_url(proxy)
-        assert "user:pass@" in result
-        assert "gw.dataimpulse.com:823" in result
-
-    def test_build_proxy_url_without_auth(self):
-        """Test building proxy URL without authentication."""
-        from serp.utils import _build_proxy_url
-        proxy = {"server": "http://proxy.com:8080"}
-        result = _build_proxy_url(proxy)
-        assert result == "http://proxy.com:8080"
-
     def test_calculate_backoff_delay(self):
         """Test backoff delay calculation."""
         from serp.utils import _calculate_backoff_delay

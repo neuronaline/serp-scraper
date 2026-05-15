@@ -93,43 +93,6 @@ def _random_user_agent() -> str:
     return random.choice(USER_AGENTS)
 
 
-def _build_proxy_url(proxy: dict) -> Optional[str]:
-    """Build proper proxy URL with authentication for HTTP clients (httpx).
-
-    Args:
-        proxy: Proxy dict with 'server', 'username', 'password' keys.
-
-    Returns:
-        Proxy URL string with authentication embedded, or just server if no auth.
-    """
-    server = proxy.get("server")
-    if not server:
-        return None
-
-    username = proxy.get("username")
-    password = proxy.get("password")
-
-    # Only include auth if BOTH username and password are present.
-    # DataImpulse requires both for user:pass auth; IP whitelist needs neither.
-    if username and password:
-        from urllib.parse import urlparse
-        # Parse the server URL to get scheme and hostname
-        parsed = urlparse(server)
-        scheme = parsed.scheme or "http"
-        hostname = parsed.hostname or ""
-
-        # Build port part if present
-        if parsed.port:
-            port_part = f":{parsed.port}"
-        else:
-            port_part = ""
-
-        auth_part = f"{username}:{password}@"
-        return f"{scheme}://{auth_part}{hostname}{port_part}"
-
-    return server
-
-
 def _build_chrome_proxy_arg(proxy: dict) -> Optional[str]:
     """Build proxy argument for Chrome's --proxy-server flag.
 
@@ -152,13 +115,6 @@ def _build_chrome_proxy_arg(proxy: dict) -> Optional[str]:
     hostname = parsed.hostname or ""
     port_part = f":{parsed.port}" if parsed.port else ""
     return f"{scheme}://{hostname}{port_part}"
-
-
-def _wait_random_delay() -> None:
-    """Wait random delay between retries (sync version)."""
-    delay = random.uniform(RETRY_DELAY_MIN, RETRY_DELAY_MAX)
-    import time
-    time.sleep(delay)
 
 
 def _calculate_backoff_delay(attempt: int) -> float:
@@ -189,15 +145,6 @@ async def _wait_random_delay_async(attempt: int = 1) -> None:
     """
     delay = _calculate_backoff_delay(attempt)
     await asyncio.sleep(delay)
-
-
-async def _retry_failed(attempt: int, error: Exception, func_name: str) -> bool:
-    """Handle failed retry attempt. Returns True to continue retrying, False to stop."""
-    logger.warning(f"{func_name} attempt {attempt} failed: {error}")
-    if attempt < MAX_RETRIES:
-        await _wait_random_delay_async(attempt)
-        return True
-    return False
 
 
 def _extract_bing_real_url(redirect_url: str) -> str:

@@ -72,10 +72,4 @@ class APIResponse(BaseModel, Generic[T]):
     meta: ResponseMeta = Field(..., description="Response metadata")
 
 
-class HealthResponse(BaseModel):
-    """Health check response."""
 
-    status: str = Field(..., description="Health status")
-    timestamp: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc), description="Check timestamp"
-    )

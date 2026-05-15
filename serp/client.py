@@ -333,7 +333,7 @@ class SerpClient:
                         proxy_url = self._build_proxy_url(proxy) if proxy else None
                         results = await _search_google_simple(
                             query, page_num, proxy_url,
-                            {}, use_cache, self._config.cache.ttl
+                            use_cache, self._config.cache.ttl
                         )
                     else:
                         proxy_url = self._build_proxy_url(proxy) if proxy else None
