@@ -38,6 +38,7 @@ class APISettings(BaseSettings):
     # API Keys (comma-separated hashed keys)
     api_keys_hashed: str = Field(
         default="",
+        alias="API_KEYS_HASHED",
         description="Comma-separated list of hashed API keys",
     )
     allow_no_auth: bool = Field(

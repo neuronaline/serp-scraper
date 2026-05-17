@@ -244,20 +244,20 @@ class GoogleNewsClient:
         else:
             port = 823
 
-        username_parts = [ps.dataimpulse_user]
+        # Build username with DataImpulse parameter format
+        # Format: login__cr.country (country attached directly with __)
+        # Additional params like sessid, sessttl are appended with ;
+        username = ps.dataimpulse_user
 
         if ps.dataimpulse_country:
-            username_parts.append(f"__cr.{ps.dataimpulse_country}")
+            # Country parameter attached directly to username with __
+            username += f"__cr.{ps.dataimpulse_country}"
 
         if ps.dataimpulse_sessid and not is_sticky:
-            username_parts.append(f"sessid.{ps.dataimpulse_sessid}")
+            username += f";sessid.{ps.dataimpulse_sessid}"
 
         if ps.dataimpulse_sessttl:
-            username_parts.append(f"sessttl.{ps.dataimpulse_sessttl}")
-
-        # Build DataImpulse username with format: user[;cr.country][;sessid.sid][;sessttl.ttl]
-        # The ; separator is used because DataImpulse format allows session TTL and country codes
-        username = ";".join(username_parts)
+            username += f";sessttl.{ps.dataimpulse_sessttl}"
 
         scheme = "socks5" if ps.dataimpulse_protocol == "socks5" else "http"
 

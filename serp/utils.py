@@ -1,6 +1,5 @@
 """Utility functions, constants, and exception classes for SERP module."""
 
-import asyncio
 import base64
 import logging
 import os
@@ -16,19 +15,9 @@ from .config import (
     USER_AGENTS,
 )
 
-# Configure module logger
+# Module-level logger - no automatic handler setup
+# Logging configuration should be controlled by the application
 logger = logging.getLogger(__name__)
-if not logger.handlers:
-    handler = logging.StreamHandler()
-    handler.setFormatter(
-        logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        )
-    )
-    logger.addHandler(handler)
-    _default_level = logging.DEBUG if os.getenv("SERP_DEBUG") else logging.WARNING
-    logger.setLevel(_default_level)
 
 
 def set_log_level(level: Union[str, int]) -> None:
@@ -135,16 +124,6 @@ def _calculate_backoff_delay(attempt: int) -> float:
     else:
         delay = random.uniform(RETRY_DELAY_MIN, RETRY_DELAY_MAX)
     return delay
-
-
-async def _wait_random_delay_async(attempt: int = 1) -> None:
-    """Wait random delay between retries with exponential backoff.
-
-    Args:
-        attempt: Current attempt number for exponential backoff calculation
-    """
-    delay = _calculate_backoff_delay(attempt)
-    await asyncio.sleep(delay)
 
 
 def _extract_bing_real_url(redirect_url: str) -> str:

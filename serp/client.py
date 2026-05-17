@@ -15,10 +15,6 @@ from .http_search import _search_google_simple, _search_simple_impl_bing
 from .parsers import _fetch_browser_impl, _search_impl
 from .types import CacheSettings, ProxySettings, RetryPolicy, SearchResult, SearchSettings
 from .utils import (
-    MAX_RETRIES,
-    RETRY_DELAY_MAX,
-    RETRY_DELAY_MIN,
-    USE_EXPONENTIAL_BACKOFF,
     CaptchaError,
     PageTimeoutError,
     ParseError,
@@ -405,20 +401,21 @@ class SerpClient:
             port = 823  # HTTP/HTTPS rotating
 
         # Build username with DataImpulse parameter format
-        username_parts = [ps.dataimpulse_user]
+        # Format: login__cr.country (country attached directly with __)
+        # Additional params like sessid, sessttl are appended with ;
+        username = ps.dataimpulse_user
 
         if ps.dataimpulse_country:
-            username_parts.append(f"__cr.{ps.dataimpulse_country}")
+            # Country parameter attached directly to username with __
+            username += f"__cr.{ps.dataimpulse_country}"
 
         # sessid and sessttl are mutually exclusive
         if ps.dataimpulse_sessid and not is_sticky:
             # sessid only makes sense for rotating proxies (not sticky)
-            username_parts.append(f"sessid.{ps.dataimpulse_sessid}")
+            username += f";sessid.{ps.dataimpulse_sessid}"
 
         if ps.dataimpulse_sessttl:
-            username_parts.append(f"sessttl.{ps.dataimpulse_sessttl}")
-
-        username = ";".join(username_parts)
+            username += f";sessttl.{ps.dataimpulse_sessttl}"
 
         # Determine scheme
         scheme = "socks5" if ps.dataimpulse_protocol == "socks5" else "http"
@@ -645,7 +642,12 @@ class SerpClient:
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Exit async context manager."""
+        """Exit async context manager.
+
+        Note: Browser instances are managed per-request and cleaned up
+        automatically by the implementation methods (_search_impl, etc.).
+        The cache is a global singleton managed at module level.
+        """
         pass
 
     def __enter__(self) -> "SerpClient":
@@ -653,7 +655,11 @@ class SerpClient:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Exit sync context manager."""
+        """Exit sync context manager.
+
+        Note: For async operations, use 'async with SerpClient()' instead.
+        This sync version is provided for backward compatibility only.
+        """
         pass
 
 

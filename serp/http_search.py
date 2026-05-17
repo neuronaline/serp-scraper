@@ -11,7 +11,6 @@ from .utils import (
     PageTimeoutError,
     ParseError,
     ProxyError,
-    MAX_RETRIES,
     _random_user_agent,
     _extract_bing_real_url,
     logger,
@@ -29,7 +28,7 @@ async def _search_google_simple(
     import httpx
 
     start = (page_num - 1) * 10
-    google_url = f"https://www.google.com/search?q={query}&start={start}"
+    google_url = f"https://www.google.com/search?q={query}&start={start}&hl=en&gl=us&lr=lang_en"
 
     request_headers = {
         "User-Agent": _random_user_agent(),
@@ -114,14 +113,14 @@ async def _search_google_simple(
 async def _search_simple_impl_bing(
     query: str,
     page_num: int,
-    proxy_url: str,
+    proxy_url: Optional[str],
 ) -> list[dict[str, Any]]:
     """Simple HTTP-based Bing search using httpx with proxy."""
     import httpx
 
     # Bing uses 1-based offset: first result number
     offset = (page_num - 1) * 10 + 1
-    url = f"https://www.bing.com/search?q={query}&first={offset}"
+    url = f"https://www.bing.com/search?q={query}&first={offset}&mkt=en-US&setlang=en&cc=US"
 
     headers = {
         "User-Agent": _random_user_agent(),
@@ -133,7 +132,7 @@ async def _search_simple_impl_bing(
     }
 
     async with httpx.AsyncClient(
-        proxy=proxy_url,
+        proxy=proxy_url if proxy_url else None,
         timeout=30.0,
         follow_redirects=True,
         headers=headers,

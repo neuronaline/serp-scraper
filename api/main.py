@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.config import get_settings
 from api.middleware.logging_middleware import get_logger, setup_logging
 from api.middleware.rate_limit import reset_rate_limiter
-from api.routers import fetch, health, news, search
+from api.routers import fetch, health, news, scholar, search
 
 logger = get_logger("api")
 
@@ -70,6 +70,7 @@ def create_app() -> FastAPI:
     app.include_router(search.router)
     app.include_router(fetch.router)
     app.include_router(news.router)
+    app.include_router(scholar.router)
 
     return app
 

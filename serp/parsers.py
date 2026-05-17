@@ -87,33 +87,6 @@ def _find_system_chrome_path() -> Optional[str]:
     return None
 
 
-def _check_snap_chromium() -> bool:
-    """Check if the default 'chromium' command is snap-packaged.
-
-    DEPRECATED: This function is kept for backward compatibility but
-    is no longer used. Use _find_system_chrome_path() instead.
-    """
-    import subprocess
-    try:
-        result = subprocess.run(
-            ["which", "chromium"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            path = result.stdout.strip()
-            if "/snap/" in path:
-                logger.warning(
-                    f"Snap Chromium detected at {path}. "
-                    "Snap browsers may not honor proxy settings properly. "
-                    "Set CHROME_PATH to a system Chrome/Chromium path to suppress this warning."
-                )
-                return True
-    except Exception:
-        pass
-    return False
-
-
 async def _create_browser(
     proxy: Optional[dict] = None,
     headless: bool = False,
@@ -163,53 +136,6 @@ async def _create_browser(
         return browser
     except Exception as e:
         logger.error(f"Failed to start browser: {e}")
-        return None
-
-
-async def _create_browser_with_proxy_auth(
-    proxy: dict,
-    headless: bool = False,
-) -> Optional[uc.Browser]:
-    """Create browser with proxy that requires authentication.
-
-    Uses a background tab to establish proxy connectivity first,
-    then navigates to the target URL on a new tab.
-
-    This approach ensures the proxy connection is authenticated before
-    any actual browsing happens.
-    """
-    import os
-
-    browser_args = [
-        "--disable-dev-shm-usage",
-        "--disable-extensions",
-        "--disable-infobars",
-        # WebRTC leak prevention (from documentation)
-        "--disable-webrtc",
-        "--disable-features=WebRtcHideLocalIpsWithMdns",
-        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-    ]
-
-    # Proxy without embedded credentials
-    proxy_arg = _build_chrome_proxy_arg(proxy)
-    if proxy_arg:
-        browser_args.append(f"--proxy-server={proxy_arg}")
-
-    try:
-        sandbox = os.geteuid() != 0
-
-        # Find system Chrome to avoid snap chromium issues
-        browser_executable = _find_system_chrome_path()
-
-        browser = await uc.start(
-            headless=headless,
-            browser_args=browser_args,
-            sandbox=sandbox,
-            browser_executable_path=browser_executable,
-        )
-        return browser
-    except Exception as e:
-        logger.error(f"Failed to start browser with proxy auth: {e}")
         return None
 
 
@@ -458,7 +384,7 @@ async def _search_impl(
         captcha_msg = "CAPTCHA detected on Bing"
     else:
         start = (page_num - 1) * 10
-        url = f"https://www.google.com/search?q={query}&start={start}"
+        url = f"https://www.google.com/search?q={query}&start={start}&hl=en&gl=us&lr=lang_en"
         captcha_msg = "CAPTCHA detected on Google"
 
     logger.debug(f"Navigating to {source}: {url}")

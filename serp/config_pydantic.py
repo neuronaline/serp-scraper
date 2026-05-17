@@ -6,21 +6,17 @@ for environment variables and .env files.
 
 import logging
 import os
-from pathlib import Path
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic_settings import BaseSettings
 
 from .types import CacheSettings, LoggingSettings, ProxySettings, RetryPolicy, SearchSettings
 
-# Environment variable names
-ENV_DOTENV_FILE = "SERP_DOTENV_FILE"
-ENV_CONFIG_FILE = "SERP_CONFIG_FILE"
-
 # DataImpulse default ports (from documentation)
-DATAIMPULSE_HTTP_PORT = 823  # HTTP/HTTPS rotating
-DATAIMPULSE_SOCKS5_PORT = 824  # SOCKS5 rotating
-DATAIMPULSE_STICKY_PORT_RANGE = (10000, 20000)  # Sticky proxy port range
+DATAIMPULSE_HTTP_PORT = 823
+DATAIMPULSE_SOCKS5_PORT = 824
+DATAIMPULSE_STICKY_PORT_RANGE = (10000, 20000)
 
 
 class SerpBaseConfig(BaseModel):
@@ -38,25 +34,18 @@ class SerpBaseConfig(BaseModel):
     }
 
 
-class SerpConfig(SerpBaseConfig):
+class SerpConfig(BaseSettings, SerpBaseConfig):
     """Main configuration class for SERP client.
 
-    Supports loading from:
-    - Environment variables
-    - .env file (if python-dotenv is installed)
-    - Direct parameter passing
-
-    Environment variables take precedence over .env file.
+    Supports loading from environment variables and direct parameter passing.
+    Environment variables use the prefix SERP_ (e.g., SERP_LOG_LEVEL, SERP_TIMEOUT).
 
     Example .env file:
         SERP_DATAIMPULSE_GATEWAY=gateway.example.com
         SERP_DATAIMPULSE_USER=myuser
-        SERP_DATAIMPULSE_PASS=mypass
         SERP_LOG_LEVEL=DEBUG
         SERP_CACHE_ENABLED=true
-        SERP_CACHE_TTL=86400
         SERP_MAX_RETRIES=3
-        SERP_TIMEOUT=30
 
     Example usage:
         >>> from serp import SerpConfig
@@ -64,40 +53,62 @@ class SerpConfig(SerpBaseConfig):
         >>> config = SerpConfig(log_level="DEBUG")
     """
 
-    # Top-level settings that map to nested objects
-    log_level: str = Field(default="WARNING", alias="SERP_LOG_LEVEL")
+    model_config = BaseSettings.model_config | {
+        "env_prefix": "SERP_",
+        "extra": "ignore",
+    }
+
+    # Top-level settings
+    log_level: str = Field(default="WARNING")
 
     # DataImpulse settings
-    dataimpulse_gateway: Optional[str] = Field(default=None, alias="SERP_DATAIMPULSE_GATEWAY")
-    dataimpulse_user: Optional[str] = Field(default=None, alias="SERP_DATAIMPULSE_USER")
-    dataimpulse_pass: Optional[str] = Field(default=None, alias="SERP_DATAIMPULSE_PASS")
-    dataimpulse_protocol: str = Field(default="http", alias="SERP_DATAIMPULSE_PROTOCOL")
-    dataimpulse_country: Optional[str] = Field(default=None, alias="SERP_DATAIMPULSE_COUNTRY")
-    dataimpulse_sessid: Optional[str] = Field(default=None, alias="SERP_DATAIMPULSE_SESSID")
-    dataimpulse_sessttl: Optional[int] = Field(default=None, alias="SERP_DATAIMPULSE_SESSTTL")
+    dataimpulse_gateway: Optional[str] = None
+    dataimpulse_user: Optional[str] = None
+    dataimpulse_pass: Optional[str] = None
+    dataimpulse_protocol: str = "http"
+    dataimpulse_country: Optional[str] = None
+    dataimpulse_sessid: Optional[str] = None
+    dataimpulse_sessttl: Optional[int] = None
 
-    # Custom proxies (comma-separated in env var)
-    custom_proxies: str = Field(default="", alias="SERP_CUSTOM_PROXIES")
+    # Custom proxies (comma-separated)
+    custom_proxies: str = ""
 
     # Proxy strategy
-    proxy_strategy: str = Field(default="dataimpulse_first", alias="SERP_PROXY_STRATEGY")
+    proxy_strategy: str = "dataimpulse_first"
 
     # Cache settings
-    cache_enabled: bool = Field(default=True, alias="SERP_CACHE_ENABLED")
-    cache_dir: str = Field(default=".cache/serp", alias="SERP_CACHE_DIR")
-    cache_ttl: int = Field(default=86400, alias="SERP_CACHE_TTL")
+    cache_enabled: bool = True
+    cache_dir: str = ".cache/serp"
+    cache_ttl: int = 86400
 
     # Retry settings
-    max_retries: int = Field(default=3, alias="SERP_MAX_RETRIES")
-    retry_delay_min: float = Field(default=0.5, alias="SERP_RETRY_DELAY_MIN")
-    retry_delay_max: float = Field(default=2.0, alias="SERP_RETRY_DELAY_MAX")
-    exponential_backoff: bool = Field(default=False, alias="SERP_EXPONENTIAL_BACKOFF")
+    max_retries: int = 3
+    retry_delay_min: float = 0.5
+    retry_delay_max: float = 2.0
+    exponential_backoff: bool = False
 
     # Search settings
-    timeout: int = Field(default=30, alias="SERP_TIMEOUT")
-    default_source: str = Field(default="auto", alias="SERP_DEFAULT_SOURCE")
-    headless: bool = Field(default=False, alias="SERP_HEADLESS")
-    user_agent: Optional[str] = Field(default=None, alias="SERP_USER_AGENT")
+    timeout: int = 30
+    default_source: str = "auto"
+    headless: bool = False
+    user_agent: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _handle_empty_strings(cls, values: dict[str, Any]) -> dict[str, Any]:
+        """Handle empty string env var values by removing them so defaults are used."""
+        if not isinstance(values, dict):
+            return values
+        # Fields that should use default when env var is empty string
+        # (removing the key lets Pydantic use the field default)
+        empty_uses_default = {
+            "cache_ttl", "max_retries", "timeout", "retry_delay_min",
+            "retry_delay_max", "dataimpulse_sessttl",
+        }
+        for key in empty_uses_default:
+            if key in values and values[key] == "":
+                del values[key]
+        return values
 
     @field_validator("log_level")
     @classmethod
@@ -112,6 +123,8 @@ class SerpConfig(SerpBaseConfig):
     @field_validator("max_retries")
     @classmethod
     def validate_max_retries(cls, v: int) -> int:
+        if v is None:
+            return 3
         if v < 1:
             logging.warning(f"max_retries must be >= 1, got {v}, using 1")
             return 1
@@ -123,6 +136,8 @@ class SerpConfig(SerpBaseConfig):
     @field_validator("timeout")
     @classmethod
     def validate_timeout(cls, v: int) -> int:
+        if v is None:
+            return 30
         if v < 5:
             logging.warning(f"timeout must be >= 5, got {v}, using 5")
             return 5
@@ -134,6 +149,8 @@ class SerpConfig(SerpBaseConfig):
     @field_validator("cache_ttl")
     @classmethod
     def validate_cache_ttl(cls, v: int) -> int:
+        if v is None:
+            return 86400
         if v < 60:
             logging.warning(f"cache_ttl must be >= 60, got {v}, using 60")
             return 60
@@ -157,81 +174,8 @@ class SerpConfig(SerpBaseConfig):
             return "auto"
         return v.lower()
 
-    def __init__(self, **data: Any):
-        # Try to load from .env file first (if python-dotenv is available)
-        self._load_dotenv()
-
-        # Apply environment variable overrides
-        self._apply_env_overrides(data)
-
-        # Call Pydantic init
-        super().__init__(**data)
-
-        # Build nested settings objects
-        self._build_nested_settings()
-
-    def _load_dotenv(self) -> None:
-        """Load settings from .env file if available."""
-        try:
-            from dotenv import find_dotenv, load_dotenv
-
-            dotenv_file = os.getenv(ENV_DOTENV_FILE)
-            if dotenv_file:
-                load_dotenv(dotenv_file)
-            else:
-                dotenv_path = find_dotenv(usecwd=True)
-                if dotenv_path:
-                    load_dotenv(dotenv_path)
-        except ImportError:
-            # python-dotenv not installed, skip .env loading
-            pass
-
-    def _apply_env_overrides(self, data: dict[str, Any]) -> None:
-        """Apply environment variable overrides to data."""
-        env_mappings = {
-            "SERP_LOG_LEVEL": "log_level",
-            "SERP_DATAIMPULSE_GATEWAY": "dataimpulse_gateway",
-            "SERP_DATAIMPULSE_USER": "dataimpulse_user",
-            "SERP_DATAIMPULSE_PASS": "dataimpulse_pass",
-            "SERP_DATAIMPULSE_PROTOCOL": "dataimpulse_protocol",
-            "SERP_DATAIMPULSE_COUNTRY": "dataimpulse_country",
-            "SERP_DATAIMPULSE_SESSID": "dataimpulse_sessid",
-            "SERP_DATAIMPULSE_SESSTTL": "dataimpulse_sessttl",
-            "SERP_CUSTOM_PROXIES": "custom_proxies",
-            "SERP_PROXY_STRATEGY": "proxy_strategy",
-            "SERP_CACHE_ENABLED": "cache_enabled",
-            "SERP_CACHE_DIR": "cache_dir",
-            "SERP_CACHE_TTL": "cache_ttl",
-            "SERP_MAX_RETRIES": "max_retries",
-            "SERP_RETRY_DELAY_MIN": "retry_delay_min",
-            "SERP_RETRY_DELAY_MAX": "retry_delay_max",
-            "SERP_EXPONENTIAL_BACKOFF": "exponential_backoff",
-            "SERP_TIMEOUT": "timeout",
-            "SERP_DEFAULT_SOURCE": "default_source",
-            "SERP_HEADLESS": "headless",
-            "SERP_USER_AGENT": "user_agent",
-        }
-
-        for env_var, field_name in env_mappings.items():
-            value = os.getenv(env_var)
-            if value is not None and field_name not in data:
-                # Type coercion
-                if field_name in ("cache_enabled", "exponential_backoff", "headless"):
-                    value = value.lower() in ("true", "1", "yes")
-                elif field_name in ("max_retries", "cache_ttl", "timeout", "dataimpulse_sessttl"):
-                    try:
-                        value = int(value)
-                    except ValueError:
-                        continue
-                elif field_name in ("retry_delay_min", "retry_delay_max"):
-                    try:
-                        value = float(value)
-                    except ValueError:
-                        continue
-                # custom_proxies is comma-separated string, keep as string for now
-                data[field_name] = value
-
-    def _build_nested_settings(self) -> None:
+    @model_validator(mode="after")
+    def _build_nested_settings(self) -> "SerpConfig":
         """Build nested settings objects from flat configuration."""
         # Parse custom_proxies from comma-separated string
         custom_proxies_list = []
@@ -270,7 +214,7 @@ class SerpConfig(SerpBaseConfig):
 
         # Map default_source to source (None = auto mode)
         source_map = {"auto": None, "google": "google", "bing": "bing"}
-        source_value = source_map.get(self.default_source.lower() if isinstance(self.default_source, str) else "auto", None)
+        source_value = source_map.get(self.default_source.lower(), None)
 
         self.search = SearchSettings(
             source=source_value,
@@ -278,6 +222,8 @@ class SerpConfig(SerpBaseConfig):
             headless=self.headless,
             user_agent=self.user_agent,
         )
+
+        return self
 
     def get_nested_dict(self) -> dict[str, Any]:
         """Get configuration as nested dictionary (for backward compatibility)."""

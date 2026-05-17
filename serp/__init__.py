@@ -67,6 +67,16 @@ from .google_news import (
     reset_default_client as reset_google_news_default_client,
 )
 
+# Google Scholar module
+from .google_scholar import (
+    ScholarClient,
+    ScholarResult,
+    ScholarSettings,
+    quick_scholar,
+    get_default_client as get_scholar_default_client,
+    reset_default_client as reset_scholar_default_client,
+)
+
 # Utilities
 from .utils import (
     ProxyError,
@@ -124,6 +134,13 @@ __all__ = [
     "quick_news",
     "get_google_news_default_client",
     "reset_google_news_default_client",
+    # Google Scholar
+    "ScholarClient",
+    "ScholarResult",
+    "ScholarSettings",
+    "quick_scholar",
+    "get_scholar_default_client",
+    "reset_scholar_default_client",
     # Output formatting
     "OutputFormatter",
     "OutputError",

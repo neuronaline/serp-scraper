@@ -12,6 +12,7 @@
    - [Search](#search)
    - [Fetch](#fetch)
    - [News](#news)
+   - [Scholar](#scholar)
 7. [Request/Response Models](#requestresponse-models)
 8. [Error Handling](#error-handling)
 9. [Rate Limiting](#rate-limiting)
@@ -30,6 +31,7 @@ The SERP Scraper REST API is a FastAPI-based HTTP interface that provides progra
 
 - **Multiple Search Methods**: Browser-based (nodriver) and HTTP-based (httpx) scraping
 - **Google News RSS**: Scrape news articles via Google News RSS feeds
+- **Google Scholar**: Scrape academic papers with rich metadata (authors, citations, year, venue, PDF links)
 - **URL Fetching**: Retrieve page content as Markdown
 - **Rate Limiting**: Per-endpoint sliding window rate limiting
 - **API Key Authentication**: Secure access with hashed API keys
@@ -141,6 +143,7 @@ All API configuration is done via environment variables with the `API_` prefix. 
 | `API_RATE_LIMIT_SEARCH` | int | `30` | Rate limit for /search (requests/min) |
 | `API_RATE_LIMIT_FETCH` | int | `60` | Rate limit for /fetch (requests/min) |
 | `API_RATE_LIMIT_NEWS` | int | `30` | Rate limit for /news (requests/min) |
+| `API_RATE_LIMIT_SCHOLAR` | int | `30` | Rate limit for /scholar (requests/min) |
 | `API_RATE_LIMIT_DEFAULT` | int | `100` | Default rate limit (requests/min) |
 | `API_KEYS_HASHED` | str | `""` | Comma-separated hashed API keys |
 | `API_ALLOW_NO_AUTH` | bool | `false` | Allow unauthenticated access (not recommended) |
@@ -422,6 +425,88 @@ Fetch Google News articles for a query via RSS feeds.
 
 ---
 
+### Scholar
+
+#### `POST /api/v1/scholar`
+
+Search Google Scholar for academic papers with rich metadata.
+
+**Authentication**: Required (`X-API-Key` header)
+
+**Rate Limit**: 30 requests/minute (configurable)
+
+**Request Body**:
+```json
+{
+  "query": "machine learning",
+  "max_results": 50,
+  "language": "en",
+  "year_from": 2020,
+  "year_to": 2024,
+  "sort_by": "relevance",
+  "author": "Hinton",
+  "exact_phrase": "neural networks"
+}
+```
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `query` | string | Yes | - | Scholar search query (1-500 chars) |
+| `max_results` | integer | No | `50` | Maximum results (1-100) |
+| `language` | string | No | `en` | Language code (`en`, `tr`, etc.) |
+| `year_from` | integer | No | `null` | Start year for publication range (1900-2030) |
+| `year_to` | integer | No | `null` | End year for publication range (1900-2030) |
+| `sort_by` | string | No | `relevance` | Sort order: `"relevance"` or `"date"` |
+| `exact_phrase` | string | No | `null` | Exact phrase search (as_epq) |
+| `some_words` | string | No | `null` | At least one of the words (as_oq) |
+| `without_words` | string | No | `null` | Without these words (as_eq) |
+| `author` | string | No | `null` | Search by author name (as_sauthors) |
+| `publication` | string | No | `null` | Publication name (as_publication) |
+
+**Response (Success)**:
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "title": "Learning representations by back-propagating errors",
+      "url": "https://www.nature.com/articles/323533664",
+      "scholar_url": "https://scholar.google.com/scholar?q=info:abc123:scholar.google.com/&output=cite",
+      "snippet": "We describe a new learning procedure...",
+      "authors": ["D E Rumelhart", "G E Hinton", "R J Williams"],
+      "publication_year": 1986,
+      "venue": "Nature",
+      "citation_count": 51234,
+      "pdf_url": "https://www.nature.com/articles/323533664.pdf",
+      "cluster_id": "abc123"
+    }
+  ],
+  "error": null,
+  "meta": {
+    "request_id": "s1t2u3v4",
+    "timestamp": "2026-05-12T07:30:00.000Z",
+    "rate_limit_remaining": 28,
+    "rate_limit_reset": 45
+  }
+}
+```
+
+**ScholarResult Fields**:
+| Field | Type | Description |
+|-------|------|-------------|
+| `title` | string | Paper title |
+| `url` | string | Direct link to the paper/article |
+| `scholar_url` | string | Google Scholar page URL |
+| `snippet` | string | Abstract/excerpt from the paper |
+| `authors` | array | List of author names |
+| `publication_year` | integer | Year of publication (null if not available) |
+| `venue` | string | Journal, conference, or publication venue |
+| `citation_count` | integer | Number of citations |
+| `pdf_url` | string | Direct PDF link if available (null otherwise) |
+| `cluster_id` | string | Google Scholar cluster ID |
+
+---
+
 ## Request/Response Models
 
 ### Standard Response Format
@@ -535,7 +620,8 @@ Rate limits are configurable per endpoint:
 ```bash
 API_RATE_LIMIT_SEARCH=30    # 30 requests/minute for /search
 API_RATE_LIMIT_FETCH=60     # 60 requests/minute for /fetch
-API_RATE_LIMIT_NEWS=30       # 30 requests/minute for /news
+API_RATE_LIMIT_NEWS=30      # 30 requests/minute for /news
+API_RATE_LIMIT_SCHOLAR=30   # 30 requests/minute for /scholar
 API_RATE_LIMIT_DEFAULT=100  # Default for unknown endpoints
 ```
 
@@ -578,6 +664,7 @@ logs/
     ├── search.log         # Search endpoint logs
     ├── fetch.log          # Fetch endpoint logs
     ├── news.log           # News endpoint logs
+    ├── scholar.log        # Scholar endpoint logs
     ├── serp.log           # SERP library logs
     └── serp_client.log    # SERP client logs
 ```
@@ -652,13 +739,14 @@ api/
 ├── deps.py              # Dependency injection (auth, rate limit)
 ├── exceptions.py        # Custom exception classes
 ├── models/
-│   ├── requests.py      # SearchRequest, FetchRequest, NewsRequest
+│   ├── requests.py      # SearchRequest, FetchRequest, NewsRequest, ScholarRequest
 │   └── responses.py     # APIResponse, ErrorDetail, ResponseMeta
 ├── routers/
 │   ├── health.py        # GET /health
 │   ├── search.py        # POST /api/v1/search
 │   ├── fetch.py         # POST /api/v1/fetch
-│   └── news.py          # POST /api/v1/news
+│   ├── news.py          # POST /api/v1/news
+│   └── scholar.py       # POST /api/v1/scholar
 ├── middleware/
 │   ├── rate_limit.py    # Sliding window rate limiter
 │   └── logging_middleware.py  # Centralized logging setup
@@ -701,7 +789,7 @@ The API uses FastAPI's dependency injection system:
    - Validates `X-API-Key` header
    - Returns verified key or raises 401
 
-2. **Rate Limit Acquisition** (`search_rate_limit`, `fetch_rate_limit`, `news_rate_limit`):
+2. **Rate Limit Acquisition** (`search_rate_limit`, `fetch_rate_limit`, `news_rate_limit`, `scholar_rate_limit`):
    - Depends on `verify_api_key` (ensures auth before rate limiting)
    - Acquires slot in sliding window
    - Returns `RateLimitInfo`
@@ -728,9 +816,9 @@ serp-scraper/
 │   ├── config.py            # Configuration
 │   ├── types.py             # Type definitions
 │   ├── google_news.py       # Google News client
-│   ├── search.py            # Browser search
-│   ├── fetch.py             # URL fetch
-│   ├── simple.py            # HTTP search
+│   ├── google_scholar.py    # Google Scholar client
+│   ├── parsers.py           # Browser-based parsing (nodriver)
+│   ├── http_search.py       # HTTP-based search
 │   ├── cache.py             # Disk caching
 │   └── utils.py             # Utilities
 │
@@ -748,7 +836,8 @@ serp-scraper/
 │   │   ├── health.py
 │   │   ├── search.py
 │   │   ├── fetch.py
-│   │   └── news.py
+│   │   ├── news.py
+│   │   └── scholar.py
 │   ├── middleware/          # Middleware
 │   │   ├── rate_limit.py
 │   │   └── logging_middleware.py
@@ -787,6 +876,7 @@ API_REQUEST_TIMEOUT=60
 API_RATE_LIMIT_SEARCH=30
 API_RATE_LIMIT_FETCH=60
 API_RATE_LIMIT_NEWS=30
+API_RATE_LIMIT_SCHOLAR=30
 API_RATE_LIMIT_DEFAULT=100
 
 # ===========================================

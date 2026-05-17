@@ -1,7 +1,7 @@
 """Configuration constants for SERP module."""
 
 # Bing URL template
-BING_URL_TEMPLATE = "https://www.bing.com/search?q={query}&first={offset}"
+BING_URL_TEMPLATE = "https://www.bing.com/search?q={query}&first={offset}&mkt=en-US&setlang=en&cc=US"
 
 # User agents for rotation (fresh 2026 versions)
 USER_AGENTS = [

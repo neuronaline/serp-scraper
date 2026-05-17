@@ -1,9 +1,8 @@
 """Interactive CLI for testing SERP scraper."""
 
 import argparse
+import asyncio
 import sys
-
-import nodriver as uc
 
 from serp import SerpClient, GoogleNewsClient, ProxyError, CaptchaError, PageTimeoutError, ParseError
 from serp.config_pydantic import get_default_config
@@ -301,35 +300,35 @@ async def test_google_news(args: argparse.Namespace) -> int:
 
 async def interactive_menu(args: argparse.Namespace) -> None:
     """Main interactive menu."""
-    print("\n" + "=" * 50)
-    print("  SERP SCRAPER - TEST TOOL")
-    print("=" * 50)
-    print(f"\nOutput format: {args.format}")
-    print("\n1. SERP Search")
-    print("2. URL Fetch")
-    print("3. Google News RSS")
-    print("4. Exit")
+    while True:
+        print("\n" + "=" * 50)
+        print("  SERP SCRAPER - TEST TOOL")
+        print("=" * 50)
+        print(f"\nOutput format: {args.format}")
+        print("\n1. SERP Search")
+        print("2. URL Fetch")
+        print("3. Google News RSS")
+        print("4. Exit")
 
-    choice = input("\nSelect option: ").strip()
+        choice = input("\nSelect option: ").strip()
 
-    exit_code = 0
-    if choice == "1":
-        exit_code = await test_serp(args)
-    elif choice == "2":
-        exit_code = await test_fetch(args)
-    elif choice == "3":
-        exit_code = await test_google_news(args)
-    elif choice == "4":
-        print("Goodbye!")
-        sys.exit(0)
-    else:
-        print("Invalid option")
+        exit_code = 0
+        if choice == "1":
+            exit_code = await test_serp(args)
+        elif choice == "2":
+            exit_code = await test_fetch(args)
+        elif choice == "3":
+            exit_code = await test_google_news(args)
+        elif choice == "4":
+            print("Goodbye!")
+            return
+        else:
+            print("Invalid option")
 
-    if exit_code != 0:
+        if exit_code != 0:
+            input("\nPress Enter to continue...")
+
         input("\nPress Enter to continue...")
-
-    input("\nPress Enter to continue...")
-    await interactive_menu(args)
 
 
 def main() -> None:
@@ -343,7 +342,7 @@ def main() -> None:
     print("\nConfigure via .env file (see .env.example)")
 
     try:
-        uc.loop().run_until_complete(interactive_menu(args))
+        asyncio.get_event_loop().run_until_complete(interactive_menu(args))
     except KeyboardInterrupt:
         print("\n\nInterrupted. Goodbye!")
 

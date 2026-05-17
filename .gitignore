@@ -40,7 +40,7 @@ htmlcov/
 
 # Others
 .cache/
-docs/
+dis-kaynaklar/
 sample/
 .kilo/
 publish.sh
