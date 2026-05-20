@@ -27,6 +27,11 @@ class FetchRequest(BaseModel):
     prefer_browser: bool = Field(
         default=True, description="Use browser (nodriver) instead of HTTP"
     )
+    compress: bool = Field(
+        default=False,
+        description="Compress long content (>10K chars). When enabled, takes head, middle, "
+                    "and tail portions, marking the truncated section."
+    )
 
 
 class NewsRequest(BaseModel):

@@ -336,7 +336,8 @@ Fetch URL content and return as Markdown.
 ```json
 {
   "url": "https://example.com",
-  "prefer_browser": true
+  "prefer_browser": true,
+  "compress": false
 }
 ```
 
@@ -344,6 +345,7 @@ Fetch URL content and return as Markdown.
 |-------|------|----------|---------|-------------|
 | `url` | string (URL) | Yes | - | URL to fetch |
 | `prefer_browser` | boolean | No | `true` | Use browser instead of HTTP |
+| `compress` | boolean | No | `false` | Compress long content (>10K chars). When enabled, takes head (35%), middle (15%), and tail (50%) portions, marking truncated sections. |
 
 **Response (Success)**:
 ```json
@@ -352,7 +354,9 @@ Fetch URL content and return as Markdown.
   "data": {
     "url": "https://example.com",
     "content": "# Example Domain\n\nThis domain is for use in...",
-    "char_count": 1250
+    "char_count": 1250,
+    "was_truncated": false,
+    "original_length": null
   },
   "error": null,
   "meta": {
@@ -363,6 +367,36 @@ Fetch URL content and return as Markdown.
   }
 }
 ```
+
+**Compressed Response Example** (when `compress: true` and content > 10K chars):
+```json
+{
+  "success": true,
+  "data": {
+    "url": "https://example.com/long-page",
+    "content": "[First 1,575 chars]...\n\n-- 10,500 chars truncated --\n\n[Last 2,250 chars]",
+    "char_count": 4532,
+    "was_truncated": true,
+    "original_length": 15000
+  },
+  "error": null,
+  "meta": {
+    "request_id": "e5f6g7h8",
+    "timestamp": "2026-05-12T07:30:00.000Z",
+    "rate_limit_remaining": 58,
+    "rate_limit_reset": 30
+  }
+}
+```
+
+**Response Fields**:
+| Field | Type | Description |
+|-------|------|-------------|
+| `url` | string | The fetched URL |
+| `content` | string | Page content as Markdown |
+| `char_count` | integer | Character count of content (compressed if applicable) |
+| `was_truncated` | boolean | Whether content was truncated due to compression |
+| `original_length` | integer | Original character count if truncated, `null` otherwise |
 
 ---
 
@@ -747,6 +781,8 @@ api/
 │   ├── fetch.py         # POST /api/v1/fetch
 │   ├── news.py          # POST /api/v1/news
 │   └── scholar.py       # POST /api/v1/scholar
+├── utils/
+│   └── compression.py   # Content compression for long content truncation
 ├── middleware/
 │   ├── rate_limit.py    # Sliding window rate limiter
 │   └── logging_middleware.py  # Centralized logging setup
@@ -838,6 +874,9 @@ serp-scraper/
 │   │   ├── fetch.py
 │   │   ├── news.py
 │   │   └── scholar.py
+│   ├── utils/               # Utility functions
+│   │   ├── __init__.py
+│   │   └── compression.py   # Content compression
 │   ├── middleware/          # Middleware
 │   │   ├── rate_limit.py
 │   │   └── logging_middleware.py
