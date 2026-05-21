@@ -77,6 +77,12 @@ from .google_scholar import (
     reset_default_client as reset_scholar_default_client,
 )
 
+# Content compression utilities
+from .compression import (
+    CompressionMeta,
+    compress_content,
+)
+
 # Utilities
 from .utils import (
     ProxyError,
@@ -118,6 +124,9 @@ __all__ = [
     "set_log_level",
     "get_default_client",
     "reset_default_client",
+    # Content compression
+    "CompressionMeta",
+    "compress_content",
     # Exceptions
     "ProxyError",
     "CaptchaError",

@@ -4,7 +4,7 @@ import argparse
 import asyncio
 import sys
 
-from serp import SerpClient, GoogleNewsClient, ProxyError, CaptchaError, PageTimeoutError, ParseError
+from serp import SerpClient, GoogleNewsClient, ProxyError, CaptchaError, PageTimeoutError, ParseError, compress_content
 from serp.config_pydantic import get_default_config
 from serp.output_formatter import OutputFormatter, OutputError, OUTPUT_TEXT, OUTPUT_JSON
 
@@ -20,6 +20,10 @@ def create_parser() -> argparse.ArgumentParser:
         choices=[OUTPUT_TEXT, OUTPUT_JSON],
         default=OUTPUT_TEXT,
         help="Output format (default: text)",
+    )
+    parser.add_argument(
+        "--compress", action="store_true",
+        help="Enable content compression for URL fetch (>10K chars)",
     )
     return parser
 
@@ -143,23 +147,38 @@ async def test_fetch(args: argparse.Namespace) -> int:
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
 
+    use_compress = args.compress
+
     config = get_default_config()
     use_cache = config.cache.enabled
     mode = args.format
 
     print(f"\nFetching: {url}")
     print(f"Output format: {mode}")
+    if use_compress:
+        print("Compression: enabled")
     print("-" * 50)
 
     try:
         async with SerpClient(config=config) as client:
             content = await client.fetch(url, use_cache=use_cache, prefer_browser=False)
 
+        # Apply compression after fetch so we can report metadata
+        was_truncated = False
+        original_length: int | None = None
+        if use_compress:
+            raw_len = len(content)
+            content, meta = compress_content(content)
+            was_truncated = meta.was_truncated
+            original_length = raw_len if was_truncated else None
+
         output = OutputFormatter.format_fetch(
             content=content,
             url=url,
             char_count=len(content),
             mode=mode,
+            was_truncated=was_truncated,
+            original_length=original_length,
         )
         print(output)
         return 0

@@ -484,6 +484,7 @@ class SerpClient:
         url: str,
         use_cache: Optional[bool] = None,
         prefer_browser: bool = True,
+        compress: bool = False,
     ) -> str:
         """Fetch a URL and return content as Markdown.
 
@@ -491,9 +492,14 @@ class SerpClient:
             url: Target URL
             use_cache: Whether to use cache. None uses client default.
             prefer_browser: If True, use browser. If False, try HTTP first.
+            compress: If True and content exceeds 10K chars, compress by
+                      taking head, middle, and tail portions of the content.
+                      The return value remains a plain string (use the
+                      standalone :func:`compress_content` function from
+                      ``serp`` if you need metadata about the truncation).
 
         Returns:
-            Page content as Markdown string
+            Page content as Markdown string (optionally compressed)
 
         Raises:
             ProxyError: All proxies failed
@@ -506,6 +512,12 @@ class SerpClient:
             cached = self._cache.get(cache_key)
             if cached is not None:
                 logger.debug(f"Cache hit for url='{url}'")
+                # Apply compression to cached content if requested (cache always
+                # stores the full uncompressed content so that subsequent fetches
+                # with compress=False get the complete page)
+                if compress:
+                    from serp.compression import compress_content
+                    cached, _ = compress_content(cached)
                 return cached
 
         retry = self._config.retry
@@ -523,9 +535,17 @@ class SerpClient:
                     # HTTP first, browser fallback on failure
                     result = await self.fetch_with_fallback(url, use_cache=False)
 
+                # Cache the ORIGINAL (uncompressed) content so that subsequent
+                # fetches with compress=False get the full content
                 if effective_cache and self._cache:
                     cache_key = self._cache.make_key(url=url)
                     self._cache.set(cache_key, result, self._config.cache.ttl)
+
+                # Apply compression if requested (after caching — return value
+                # only, the cache always holds the full original)
+                if compress:
+                    from serp.compression import compress_content
+                    result, _ = compress_content(result)
 
                 return result
 
@@ -707,21 +727,22 @@ async def quick_search(
     return await client.search(query, page_num, method=method, source=source)
 
 
-async def quick_fetch(url: str, prefer_browser: bool = True) -> str:
+async def quick_fetch(url: str, prefer_browser: bool = True, compress: bool = False) -> str:
     """Convenience function for fetch using default client.
 
     Args:
         url: Target URL
         prefer_browser: Whether to prefer browser-based fetch
+        compress: Whether to compress long content (>10K chars)
 
     Returns:
-        Page content as Markdown string
+        Page content as Markdown string (optionally compressed)
 
     Note:
         For repeated use, create a SerpClient instance instead.
     """
     client = get_default_client()
-    return await client.fetch(url, prefer_browser=prefer_browser)
+    return await client.fetch(url, prefer_browser=prefer_browser, compress=compress)
 
 
 async def quick_search_http(

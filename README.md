@@ -20,6 +20,7 @@ A powerful, async Python library for scraping Google and Bing Search Engine Resu
 - **CLI Tool**: Interactive command-line interface for testing
 - **Dual Output Format**: Text (human-readable) and JSON (LLM-friendly) output
 - **REST API**: Optional FastAPI-based REST API with rate limiting and authentication
+- **Content Compression**: Built-in `compress_content()` utility for truncating long content into head, middle, and tail portions — available both in the core library and the REST API
 
 ## Installation
 
@@ -70,25 +71,7 @@ async def main():
 asyncio.run(main())
 ```
 
-### Quick Functions
 
-For simple use cases without creating a client:
-
-```python
-import asyncio
-from serp import quick_search, quick_fetch
-
-async def main():
-    # Search
-    results = await quick_search("web scraping")
-    print(f"Found {len(results)} results")
-
-    # Fetch URL
-    content = await quick_fetch("https://example.com")
-    print(content[:500])
-
-asyncio.run(main())
-```
 
 ### Google News RSS
 
@@ -135,6 +118,49 @@ async def main():
         # Fetch page content as Markdown
         content = await client.fetch("https://example.com")
         print(content)
+
+asyncio.run(main())
+```
+
+### Content Compression
+
+Compress long content into head, middle, and tail portions — useful for LLM contexts where you want to retain key information while reducing token count:
+
+```python
+from serp import compress_content, CompressionMeta
+
+long_text = "..."  # e.g. 20,000+ characters
+compressed, meta = compress_content(long_text)
+
+if meta.was_truncated:
+    print(f"Reduced from {meta.original_length:,} to {meta.compressed_length:,} chars")
+    print(f"Truncated {meta.truncated_chars:,} characters")
+```
+
+Compression can also be enabled directly during fetch:
+
+```python
+content = await client.fetch("https://example.com", compress=True)
+```
+
+The standalone `compress_content()` function gives you full control over thresholds and metadata, while the `compress=True` parameter on `fetch()` is a convenience shortcut.
+
+### Quick Functions
+
+For simple use cases without creating a client:
+
+```python
+import asyncio
+from serp import quick_search, quick_fetch
+
+async def main():
+    # Search
+    results = await quick_search("web scraping")
+    print(f"Found {len(results)} results")
+
+    # Fetch URL (with optional compression)
+    content = await quick_fetch("https://example.com", compress=True)
+    print(content[:500])
 
 asyncio.run(main())
 ```
@@ -286,7 +312,7 @@ Search for a query and return results.
 
 ---
 
-##### `client.fetch(url, use_cache=None, prefer_browser=True)`
+##### `client.fetch(url, use_cache=None, prefer_browser=True, compress=False)`
 
 Fetch a URL and return content as Markdown.
 
@@ -294,9 +320,12 @@ Fetch a URL and return content as Markdown.
 - `url` (str): Target URL
 - `use_cache` (bool): Whether to use cache. `None` uses client default.
 - `prefer_browser` (bool): If True, use browser directly. If False, try HTTP first then fallback to browser.
+- `compress` (bool): If True and content exceeds ~10K chars, compress by taking head, middle, and tail portions. (Default: False)
 
 **Returns:**
-- `str`: Page content converted to Markdown
+- `str`: Page content converted to Markdown (optionally compressed)
+
+**Note:** When you need metadata about the truncation (original length, etc.), use the standalone `compress_content()` function from the `serp` package instead of the `compress` parameter on `fetch()`.
 
 ---
 
@@ -341,8 +370,8 @@ results = await quick_search("query")
 # HTTP-based search only
 results = await quick_search_http("query")
 
-# Fetch URL
-content = await quick_fetch("https://example.com")
+# Fetch URL (with optional compression)
+content = await quick_fetch("https://example.com", compress=True)
 ```
 
 ---
@@ -500,6 +529,51 @@ set_log_level("WARNING")  # Only show warnings and errors
 
 ---
 
+#### `compress_content(content, threshold=10000, head_pct=0.35, middle_pct=0.15, tail_pct=0.50)`
+
+Compress long content by extracting head, middle, and tail portions, joined with a truncation marker.
+
+```python
+from serp import compress_content, CompressionMeta
+
+compressed, meta = compress_content(
+    content,
+    threshold=10000,      # Content longer than this gets compressed
+    head_pct=0.35,        # 35% of target for the head
+    middle_pct=0.15,      # 15% of target for the middle
+    tail_pct=0.50,        # 50% of target for the tail
+)
+
+if meta.was_truncated:
+    print(f"Original: {meta.original_length:,} chars")
+    print(f"Compressed: {meta.compressed_length:,} chars")
+    print(f"Truncated: {meta.truncated_chars:,} chars")
+else:
+    print("Content was within threshold, returned as-is")
+```
+
+**Parameters:**
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `content` | str | - | The content string to compress |
+| `threshold` | int | `10000` | Char length threshold. Content shorter than this is unchanged. |
+| `head_pct` | float | `0.35` | Fraction of target length for the head portion |
+| `middle_pct` | float | `0.15` | Fraction of target length for the middle portion |
+| `tail_pct` | float | `0.50` | Fraction of target length for the tail portion |
+
+**Returns:**
+- `tuple[str, CompressionMeta]`: (compressed_content, metadata)
+
+**CompressionMeta attributes:**
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `original_length` | int | Character count before compression |
+| `compressed_length` | int | Character count after compression |
+| `truncated_chars` | int | Number of characters removed |
+| `was_truncated` | bool | Whether content exceeded threshold and was truncated |
+
+---
+
 ### Exceptions
 
 | Exception | Description |
@@ -527,13 +601,15 @@ The package includes an interactive CLI tool for testing:
 
 ```bash
 python main.py
-python main.py --format json  # JSON output for LLM integration
-python main.py -f text        # Human-readable text output (default)
+python main.py --format json   # JSON output for LLM integration
+python main.py -f text         # Human-readable text output (default)
+python main.py --compress      # Enable content compression for URL fetch
+python main.py --compress -f json  # Compress + JSON output
 ```
 
 Features:
 - SERP Search testing
-- URL Fetch testing
+- URL Fetch testing (with optional `--compress` flag for long content)
 - Google News RSS testing
 - Dual output format (text/JSON)
 - Proxy status checking
@@ -560,8 +636,9 @@ uvicorn api.main:app --host 0.0.0.0 --port 8000
 
 - `GET /health` - Health check
 - `POST /api/v1/search` - Search SERP results
-- `POST /api/v1/fetch` - Fetch URL content
+- `POST /api/v1/fetch` - Fetch URL content (supports optional `compress` field)
 - `POST /api/v1/news` - Get Google News articles
+- `POST /api/v1/scholar` - Search Google Scholar articles
 - `GET /api/v1/keys` - List API keys (admin)
 - `POST /api/v1/keys` - Create API key (admin)
 
@@ -577,45 +654,48 @@ The API includes rate limiting middleware to prevent abuse.
 
 ```
 serp-scraper/
-├── serp/                    # Main package
-│   ├── __init__.py          # Exports and API
+├── serp/                    # Core library
+│   ├── __init__.py          # Public API exports
 │   ├── client.py            # SerpClient and quick functions
-│   ├── config.py            # Configuration constants
-│   ├── config_pydantic.py   # Pydantic-based configuration
-│   ├── types.py             # Type definitions (SearchResult, etc.)
+│   ├── cache.py             # Disk-based caching (DiskCache, NullCache)
+│   ├── compression.py       # Content compression (compress_content, CompressionMeta)
+│   ├── config.py            # Configuration constants (BING_URL_TEMPLATE, USER_AGENTS)
+│   ├── config_pydantic.py   # Pydantic-based SerpConfig
 │   ├── google_news.py       # Google News RSS client
-│   ├── search.py            # Browser-based search
-│   ├── fetch.py             # URL fetch functionality
-│   ├── simple.py            # HTTP-based search
-│   ├── parsers.py           # Result parsing logic
-│   ├── cache.py             # Disk-based caching
+│   ├── google_scholar.py    # Google Scholar client
+│   ├── http_search.py       # HTTP-based search (httpx)
 │   ├── output_formatter.py  # Text and JSON output formatting
-│   └── utils.py             # Utilities and helpers
+│   ├── parsers.py           # Browser-based parsing (nodriver)
+│   ├── types.py             # Type definitions (SearchResult, RetryPolicy, etc.)
+│   └── utils.py             # Exceptions, helpers, constants
 ├── api/                     # REST API (optional)
 │   ├── main.py              # FastAPI application
-│   ├── config.py            # API configuration
-│   ├── deps.py              # Dependencies
-│   ├── exceptions.py        # Custom exceptions
+│   ├── config.py            # API configuration (APISettings, RateLimitConfig)
+│   ├── deps.py              # DI: auth, rate limit, semaphore
+│   ├── exceptions.py        # Custom exception classes
 │   ├── models/              # Pydantic models
-│   │   ├── requests.py      # Request models
-│   │   └── responses.py     # Response models
+│   │   ├── requests.py      # Request schemas
+│   │   └── responses.py     # Response schemas
 │   ├── routers/             # API routes
 │   │   ├── __init__.py
-│   │   ├── health.py        # Health check endpoint
-│   │   ├── search.py        # Search endpoints
-│   │   ├── fetch.py         # Fetch endpoints
-│   │   └── news.py          # News endpoints
+│   │   ├── health.py        # GET /health
+│   │   ├── search.py        # POST /api/v1/search
+│   │   ├── fetch.py         # POST /api/v1/fetch
+│   │   ├── news.py          # POST /api/v1/news
+│   │   └── scholar.py       # POST /api/v1/scholar
 │   ├── middleware/          # Middleware
-│   │   ├── rate_limit.py    # Rate limiting
+│   │   ├── rate_limit.py    # Sliding window rate limiter
 │   │   └── logging_middleware.py
+│   ├── utils/               # Backward-compat re-exports
+│   │   └── compression.py   # Re-exports from serp.compression
 │   └── cli/                 # API CLI tools
-│       └── keys.py          # API key management
+│       └── keys.py          # API key generation
 ├── tests/                   # Test suite
-│   ├── conftest.py          # Test fixtures
-│   ├── test_serp.py
-│   ├── test_google_news.py
-│   ├── test_cache.py
-│   └── api/                 # API tests
+│   ├── conftest.py          # Fixtures, global state reset
+│   ├── test_serp.py         # Core library tests (505+ tests)
+│   ├── test_cache.py        # Cache tests
+│   ├── test_google_news.py  # Google News tests
+│   └── api/                 # API tests (placeholder)
 ├── main.py                  # Interactive CLI tool
 ├── .env.example            # Environment variables template
 ├── pyproject.toml          # Project metadata
@@ -676,6 +756,21 @@ The caching system uses a disk-based approach:
 - Keys are SHA256 hashes of query parameters
 - Automatic expiration based on TTL
 - Can be disabled via `cache_enabled=False` or `SERP_CACHE_ENABLED=false`
+
+### Content Compression
+
+The library includes a built-in content compression utility for truncating long content while preserving key information:
+
+**Algorithm:**
+1. If content length ≤ `threshold` (default: 10,000 chars), return unchanged
+2. Target compressed length = 45% of threshold (~4,500 chars)
+3. Extract three portions: head (35%), middle (15%), tail (50%)
+4. Join with a truncation marker: `\n\n-- X,XXX chars truncated --\n\n`
+
+**Usage scenarios:**
+- **LLM context optimization**: Reduce token count while preserving document structure
+- **API responses**: The REST API `/fetch` endpoint supports `"compress": true`
+- **Direct library use**: `from serp import compress_content` or `client.fetch(url, compress=True)`
 
 ## Error Handling
 

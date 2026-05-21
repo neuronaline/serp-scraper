@@ -72,6 +72,8 @@ class TextFormatter:
         url: str,
         char_count: int,
         error: Optional[OutputError] = None,
+        was_truncated: bool = False,
+        original_length: Optional[int] = None,
     ) -> str:
         """Format fetched content as text."""
         if error:
@@ -83,6 +85,12 @@ class TextFormatter:
             "=" * 50,
             f"URL: {url}",
             f"Characters: {char_count}",
+        ]
+
+        if was_truncated and original_length is not None:
+            lines.append(f"Truncated: yes (original {original_length:,} chars)")
+
+        lines += [
             "-" * 50,
             "Preview (first 30 lines):",
             "-" * 50,
@@ -198,20 +206,25 @@ class JSONFormatter:
         url: str,
         char_count: int,
         error: Optional[OutputError] = None,
+        was_truncated: bool = False,
+        original_length: Optional[int] = None,
     ) -> str:
         """Format fetched content as JSON."""
         if error:
             return JSONFormatter._format_error("fetch", error, url=url)
 
-        return json.dumps({
+        data = {
             "status": "success",
             "type": "fetch",
             "url": url,
             "char_count": char_count,
+            "was_truncated": was_truncated,
+            "original_length": original_length if was_truncated else None,
             "content_preview": "\n".join(content.split("\n")[:30]),
             "content_lines": len(content.split("\n")),
             "errors": [],
-        }, indent=2, ensure_ascii=False)
+        }
+        return json.dumps(data, indent=2, ensure_ascii=False)
 
     @staticmethod
     def format_news(

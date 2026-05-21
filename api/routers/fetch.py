@@ -11,8 +11,7 @@ from api.deps import RateLimitInfo, rate_limited_request, fetch_rate_limit
 from api.middleware.logging_middleware import get_logger
 from api.models.requests import FetchRequest
 from api.models.responses import APIResponse, ErrorDetail, ResponseMeta
-from api.utils.compression import compress_content
-from serp import SerpClient, SerpConfig
+from serp import SerpClient, SerpConfig, compress_content
 from serp.utils import CaptchaError, PageTimeoutError, ParseError, ProxyError
 
 router = APIRouter(prefix="/api/v1/fetch", tags=["Fetch"])
@@ -58,13 +57,15 @@ async def fetch_endpoint(
                 f"| request_id={request_id}"
             )
 
-            # Apply compression if requested and content is long
+            # Apply compression if requested (client-side, includes caching)
             was_truncated = False
             original_length: int | None = None
             if params.compress:
+                # Measure original length before compression
+                raw_len = len(content)
                 content, meta = compress_content(content)
                 was_truncated = meta.was_truncated
-                original_length = meta.original_length
+                original_length = raw_len if was_truncated else None
                 if was_truncated:
                     logger.info(
                         f"Content compressed: url='{params.url}' "
