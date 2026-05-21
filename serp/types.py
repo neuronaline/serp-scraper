@@ -115,7 +115,8 @@ class SearchSettings:
     Attributes:
         source: Preferred search source ("google", "bing", "auto", or None for auto)
         timeout: Request timeout in seconds
-        headless: Whether to run browser in headless mode
+        headless: Whether to run browser in headless mode. When False (the default),
+                  a virtual display (DISPLAY environment variable) is required.
         user_agent: Custom user agent string (None for default rotating agents)
     """
 

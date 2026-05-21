@@ -57,6 +57,11 @@ TIMEOUT_SECONDS = 30
 TIMEOUT_MS = TIMEOUT_SECONDS * 1000  # Backward compatibility alias
 
 
+class VirtualScreenRequiredError(Exception):
+    """No virtual display available for non-headless browser mode."""
+    pass
+
+
 class ProxyError(Exception):
     """All proxies failed."""
     pass
@@ -160,3 +165,33 @@ def _extract_bing_real_url(redirect_url: str) -> str:
         logger.debug(f"Failed to decode Bing redirect URL: {e}")
 
     return redirect_url
+
+
+def has_virtual_display() -> bool:
+    """Check if a virtual display (DISPLAY) is available.
+
+    Returns:
+        True if DISPLAY environment variable is set, False otherwise.
+    """
+    return bool(os.environ.get("DISPLAY"))
+
+
+def require_virtual_display() -> None:
+    """Ensure a virtual display is available.
+
+    Raises:
+        VirtualScreenRequiredError: If no DISPLAY environment variable is set.
+
+    Note:
+        When running browser in non-headless mode (headless=False, the default),
+        a visible display is required. This function checks that DISPLAY is set
+        and raises an error if running in headless=False mode without a display.
+
+        For headless=True mode, a virtual display is not required.
+    """
+    if not has_virtual_display():
+        raise VirtualScreenRequiredError(
+            "No virtual display available. Non-headless browser mode requires "
+            "a virtual display (DISPLAY environment variable). "
+            "Either set DISPLAY (e.g., DISPLAY=:99) or run in headless mode."
+        )

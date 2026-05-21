@@ -89,6 +89,7 @@ from .utils import (
     CaptchaError,
     PageTimeoutError,
     ParseError,
+    VirtualScreenRequiredError,
     MAX_RETRIES,
     TIMEOUT_MS,
     USER_AGENTS,
@@ -132,6 +133,7 @@ __all__ = [
     "CaptchaError",
     "PageTimeoutError",
     "ParseError",
+    "VirtualScreenRequiredError",
     # Constants
     "MAX_RETRIES",
     "TIMEOUT_MS",

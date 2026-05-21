@@ -11,9 +11,11 @@ from .utils import (
     CaptchaError,
     PageTimeoutError,
     ParseError,
+    VirtualScreenRequiredError,
     _build_chrome_proxy_arg,
     _extract_bing_real_url,
     logger,
+    require_virtual_display,
 )
 from nodriver.cdp.runtime import RemoteObject
 from nodriver.cdp.fetch import (
@@ -99,7 +101,15 @@ async def _create_browser(
     Proxy credentials are NOT embedded in --proxy-server because Chrome
     does not support user:pass@host format. Authentication is handled
     separately via CDP Fetch.authRequired event in _setup_proxy_auth().
+
+    When headless=False (the default), a virtual display (DISPLAY env var)
+    is required. Running non-headless without a display will raise
+    VirtualScreenRequiredError.
     """
+    # Non-headless mode requires a virtual display
+    if not headless:
+        require_virtual_display()
+
     browser_args = [
         "--disable-dev-shm-usage",
         "--disable-extensions",

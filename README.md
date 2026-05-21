@@ -50,6 +50,10 @@ pip install serp-scraper[api]  # With REST API (FastAPI)
 
 - Python 3.10 or higher
 - Google Chrome browser installed
+- **Virtual display** (for non-headless mode, the default):
+  - Linux/headless servers: Install [Xvfb](https://en.wikipedia.org/wiki/Xvfb) (`sudo apt install xvfb`) and use `DISPLAY=:99` or run with `xvfb-run`
+  - macOS: No additional setup needed (has built-in display)
+  - Windows: No additional setup needed (has built-in display)
 
 ## Quick Start
 
@@ -71,6 +75,32 @@ async def main():
 asyncio.run(main())
 ```
 
+### Running on Headless Servers
+
+By default, the browser runs in **non-headless mode** (visible window) which requires a display. For headless servers or CI/CD environments, use one of these approaches:
+
+**Option 1: Use `xvfb-run`** (recommended for Linux):
+```bash
+xvfb-run -a python your_script.py
+```
+
+**Option 2: Set DISPLAY environment variable**:
+```bash
+DISPLAY=:99 python your_script.py
+```
+
+**Option 3: Run in headless mode**:
+```python
+async with SerpClient(headless=True) as client:
+    results = await client.search("python programming")
+```
+
+Or via environment variable:
+```bash
+SERP_HEADLESS=true python your_script.py
+```
+
+Note: The `VirtualScreenRequiredError` exception is raised when running non-headless without a display.
 
 
 ### Google News RSS
@@ -244,7 +274,7 @@ SERP_USER_AGENT=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
 | `cache_dir` | str | `".cache/serp"` | Cache directory path |
 | `cache_ttl` | int | `86400` | Cache TTL in seconds (min 60) |
 | `default_source` | str | `"auto"` | Default search source: "google", "bing", or "auto" |
-| `headless` | bool | `false` | Run browser in headless mode |
+| `headless` | bool | `false` | Run browser in headless mode (requires virtual display when false) |
 | `user_agent` | str | `None` | Custom user agent string |
 
 ### Environment Variables
@@ -582,6 +612,7 @@ else:
 | `CaptchaError` | CAPTCHA could not be solved after retries |
 | `PageTimeoutError` | Page load timeout |
 | `ParseError` | Failed to parse results |
+| `VirtualScreenRequiredError` | No virtual display available for non-headless mode |
 
 ---
 
@@ -780,6 +811,7 @@ The library provides specific exceptions for different failure modes:
 - **CaptchaError**: Search engine detected automation and presented CAPTCHA
 - **PageTimeoutError**: Page did not load within the timeout period
 - **ParseError**: Page loaded but results could not be parsed
+- **VirtualScreenRequiredError**: Non-headless mode selected but no virtual display available (use `xvfb-run`, set `DISPLAY`, or use `headless=True`)
 
 ---
 
