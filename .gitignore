@@ -41,7 +41,9 @@ htmlcov/
 # Others
 .cache/
 dis-kaynaklar/
+docs/
 sample/
 .kilo/
 publish.sh
 .ruff_cache/
+diff.sh

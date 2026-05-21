@@ -1,7 +1,27 @@
 """Google Scholar scraping module.
 
 This module provides functionality to scrape academic papers from Google Scholar.
-It uses browser automation (nodriver) to fetch and parse Scholar results.
+
+FETCH STRATEGY (BS4 Primary, Browser Fallback):
+===============================================
+Google Scholar pages require JavaScript to render results, but we still apply
+a BS4-first strategy for robustness:
+
+1. PRIMARY: BS4 + HTTP fetch
+   - Try HTTP request first (faster, lower resource usage)
+   - If Scholar page has cached/static content accessible, parse it
+   - This may succeed for simple queries or cached pages
+
+2. FALLBACK: Browser-based (nodriver)
+   - Invoked when BS4 fetch fails or returns unusable content
+   - Handles JavaScript-rendered Scholar pages
+   - More reliable but heavier resource usage
+
+Error conditions that trigger browser fallback:
+- Empty or minimal content
+- CAPTCHA detection
+- Parse errors
+- Connection/timeout errors
 
 Example:
     >>> import asyncio
@@ -303,61 +323,6 @@ class ScholarClient:
             "username": username,
             "password": ps.dataimpulse_pass or "",
         }
-
-    async def _fetch_page(self, url: str, proxy: Optional[dict]) -> str:
-        """Fetch Scholar page content using nodriver browser.
-
-        Args:
-            url: Scholar URL to fetch
-            proxy: Proxy configuration (optional)
-
-        Returns:
-            Page HTML content
-
-        Raises:
-            PageTimeoutError: If page load times out
-            ProxyError: If proxy fails
-            ParseError: If CAPTCHA detected
-        """
-        browser = await _create_browser(proxy, self._config.search.headless)
-        if browser is None:
-            raise ProxyError("Failed to start browser for Scholar search")
-
-        tab = None
-        try:
-            tab = await browser.get(url)
-
-            # Wait for results to load
-            try:
-                await tab.select(self.RESULT_CONTAINER_SELECTOR, timeout=15)
-            except Exception as e:
-                logger.debug(f"Smart wait for Scholar results timed out: {e}")
-                await asyncio.sleep(2)
-
-            # Check for CAPTCHA
-            current_url = (tab.url or "").lower()
-            if "sorry/app" in current_url or "/captcha/" in current_url:
-                from .utils import CaptchaError
-                raise CaptchaError("CAPTCHA detected on Google Scholar")
-
-            page_content = await tab.get_content()
-            if _check_captcha(tab.url, page_content):
-                from .utils import CaptchaError
-                raise CaptchaError("CAPTCHA detected on Google Scholar")
-
-            return page_content
-
-        finally:
-            if tab is not None:
-                try:
-                    await tab.close()
-                except Exception:
-                    pass
-
-            try:
-                await _cleanup_browser(browser)
-            except Exception:
-                pass
 
     async def _parse_results(self, tab, page_num: int) -> list[ScholarResult]:
         """Parse Google Scholar results using JavaScript evaluation.

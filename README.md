@@ -11,6 +11,7 @@ A powerful, async Python library for scraping Google and Bing Search Engine Resu
 
 - **Dual Search Methods**: Browser-based (`nodriver`) and HTTP-based (`httpx`) scraping
 - **Google News RSS**: Scrape news articles via Google News RSS feeds
+- **Google Scholar**: Search academic papers from Google Scholar
 - **Proxy Rotation**: DataImpulse and custom proxy support with automatic rotation
 - **Intelligent Caching**: Disk-based caching with configurable TTL
 - **CAPTCHA Handling**: Automatic detection with retry logic and exponential backoff
@@ -319,6 +320,7 @@ SERP_USER_AGENT=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
 | `API_RATE_LIMIT_SEARCH` | Rate limit for /search (req/min) | `30` |
 | `API_RATE_LIMIT_FETCH` | Rate limit for /fetch (req/min) | `60` |
 | `API_RATE_LIMIT_NEWS` | Rate limit for /news (req/min) | `30` |
+| `API_RATE_LIMIT_SCHOLAR` | Rate limit for /scholar (req/min) | `30` |
 | `API_RATE_LIMIT_DEFAULT` | Default rate limit (req/min) | `100` |
 | `API_KEYS_HASHED` | Comma-separated hashed API keys | - |
 | `API_ALLOW_NO_AUTH` | Allow unauthenticated access | `false` |
@@ -349,14 +351,15 @@ client = SerpClient(
 
 #### Methods
 
-##### `client.search(query, page_num=1, method=None, source=None, use_cache=None)`
+##### `client.search(query, page_num=1, source=None, use_cache=None)`
 
 Search for a query and return results.
+
+**Note:** Google and Bing SERP searches always use browser (nodriver) because these search engines require JavaScript to render results. The `method` parameter is deprecated and ignored.
 
 **Parameters:**
 - `query` (str): Search query string
 - `page_num` (int): Page number (1-based), defaults to 1
-- `method` (str): Search method - `"browser"` (nodriver), `"http"` (httpx), or `None` (auto)
 - `source` (str): Search engine - `"google"`, `"bing"`, or `None` (auto: google first, bing fallback)
 - `use_cache` (bool): Whether to use cache. `None` uses client default.
 
@@ -371,14 +374,20 @@ Search for a query and return results.
 
 ---
 
-##### `client.fetch(url, use_cache=None, prefer_browser=True, compress=False)`
+##### `client.fetch(url, use_cache=None, prefer_browser=False, compress=False)`
 
 Fetch a URL and return content as Markdown.
+
+**Fetch Strategy (per docs/Scraper Strategy.md):**
+- **Primary method:** BS4 (BeautifulSoup4) + HTTP - fast, lightweight
+- **Fallback:** Browser (nodriver) - triggered on BS4 failure (empty content, CAPTCHA, parse errors, timeouts)
+- **Default behavior:** BS4-first, browser fallback (`prefer_browser=False`)
+- **Forced browser:** Set `prefer_browser=True` to skip BS4 and use browser directly
 
 **Parameters:**
 - `url` (str): Target URL
 - `use_cache` (bool): Whether to use cache. `None` uses client default.
-- `prefer_browser` (bool): If True, use browser directly. If False, try HTTP first then fallback to browser.
+- `prefer_browser` (bool): If True, use browser directly (legacy mode). If False (default), try BS4 first then fallback to browser.
 - `compress` (bool): If True and content exceeds ~10K chars, compress by taking head, middle, and tail portions. (Default: False)
 
 **Returns:**
@@ -794,24 +803,33 @@ pytest tests/test_serp.py
 1. Check cache for existing results (if `use_cache=True`)
 2. Load proxy configuration from file or environment
 3. Select random proxy (or DataImpulse if configured)
-4. Create browser with stealth settings (browser method) or use HTTP client (http method)
+4. Create browser with stealth settings
 5. Navigate to search URL
 6. Wait for results to load
 7. Check for CAPTCHA
 8. Parse organic results
 9. Cache results before returning
 
+### Fetch Strategy (per docs/Scraper Strategy.md)
+
+**For Google Scholar, Google News, and URL Fetch:**
+1. **Primary:** BS4 (BeautifulSoup4) + HTTP - fast, lightweight
+2. **Fallback:** Browser (nodriver) - triggered on BS4 failure
+
+**For Google and Bing SERP:**
+- Always uses browser (nodriver) because JavaScript is required to render results
+
 ### Search Methods
 
-**Browser Method (`method="browser"`)**:
-- Uses `nodriver` for stealth Chrome automation
+**SERP Search (Google/Bing):**
+- Always uses `nodriver` for stealth Chrome automation
 - More reliable, harder to detect
 - Slower due to browser overhead
 
-**HTTP Method (`method="http"`)**:
-- Uses `httpx` for direct HTTP requests
-- Faster, less resource intensive
-- May be blocked more easily
+**URL Fetch / Google News / Google Scholar:**
+- Default: BS4-first, browser fallback on failure
+- BS4 method: Uses `httpx` for direct HTTP requests with BeautifulSoup4 parsing
+- Browser fallback: Uses `nodriver` when BS4 fails (empty content, CAPTCHA, parse errors, timeouts)
 
 ### Caching
 

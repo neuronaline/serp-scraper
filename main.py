@@ -4,7 +4,7 @@ import argparse
 import asyncio
 import sys
 
-from serp import SerpClient, GoogleNewsClient, ProxyError, CaptchaError, PageTimeoutError, ParseError, compress_content
+from serp import SerpClient, GoogleNewsClient, ScholarClient, ProxyError, CaptchaError, PageTimeoutError, ParseError, compress_content
 from serp.config_pydantic import get_default_config
 from serp.output_formatter import OutputFormatter, OutputError, OUTPUT_TEXT, OUTPUT_JSON
 
@@ -317,6 +317,91 @@ async def test_google_news(args: argparse.Namespace) -> int:
         return 1
 
 
+async def test_scholar(args: argparse.Namespace) -> int:
+    """Test Google Scholar search."""
+    query = input("Enter search query: ").strip()
+    if not query:
+        print("ERROR: Empty query")
+        return 1
+
+    max_input = input("Max results [50]: ").strip()
+    max_results = int(max_input) if max_input else 50
+
+    config = get_default_config()
+    use_cache = config.cache.enabled
+    mode = args.format
+
+    print(f"\nSearching Scholar: '{query}'")
+    print(f"Max results: {max_results}")
+    print(f"Output format: {mode}")
+    print("-" * 50)
+
+    try:
+        async with ScholarClient(config=config) as client:
+            results = await client.search_scholar(query, max_results=max_results)
+
+        if not results:
+            if mode == OUTPUT_JSON:
+                output = OutputFormatter.format_scholar(
+                    results=[],
+                    query=query,
+                    mode=mode,
+                )
+                print(output)
+            else:
+                print("No results found")
+            return 0
+
+        output = OutputFormatter.format_scholar(
+            results=results,
+            query=query,
+            mode=mode,
+        )
+        print(output)
+        return 0
+
+    except ProxyError as e:
+        error = OutputError(code="PROXY_ERROR", message=str(e))
+        output = OutputFormatter.format_scholar(
+            results=[],
+            query=query,
+            mode=mode,
+            error=error,
+        )
+        print(output)
+        return 1
+    except CaptchaError as e:
+        error = OutputError(code="CAPTCHA_ERROR", message=str(e))
+        output = OutputFormatter.format_scholar(
+            results=[],
+            query=query,
+            mode=mode,
+            error=error,
+        )
+        print(output)
+        return 1
+    except PageTimeoutError as e:
+        error = OutputError(code="TIMEOUT_ERROR", message=str(e))
+        output = OutputFormatter.format_scholar(
+            results=[],
+            query=query,
+            mode=mode,
+            error=error,
+        )
+        print(output)
+        return 1
+    except Exception as e:
+        error = OutputError(code="UNKNOWN_ERROR", message=str(e))
+        output = OutputFormatter.format_scholar(
+            results=[],
+            query=query,
+            mode=mode,
+            error=error,
+        )
+        print(output)
+        return 1
+
+
 async def interactive_menu(args: argparse.Namespace) -> None:
     """Main interactive menu."""
     while True:
@@ -327,7 +412,8 @@ async def interactive_menu(args: argparse.Namespace) -> None:
         print("\n1. SERP Search")
         print("2. URL Fetch")
         print("3. Google News RSS")
-        print("4. Exit")
+        print("4. Google Scholar")
+        print("5. Exit")
 
         choice = input("\nSelect option: ").strip()
 
@@ -339,6 +425,8 @@ async def interactive_menu(args: argparse.Namespace) -> None:
         elif choice == "3":
             exit_code = await test_google_news(args)
         elif choice == "4":
+            exit_code = await test_scholar(args)
+        elif choice == "5":
             print("Goodbye!")
             return
         else:
@@ -361,7 +449,7 @@ def main() -> None:
     print("\nConfigure via .env file (see .env.example)")
 
     try:
-        asyncio.get_event_loop().run_until_complete(interactive_menu(args))
+        asyncio.run(interactive_menu(args))
     except KeyboardInterrupt:
         print("\n\nInterrupted. Goodbye!")
 

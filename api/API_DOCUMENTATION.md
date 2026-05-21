@@ -142,8 +142,7 @@ All API configuration is done via environment variables with the `API_` prefix. 
 | `API_REQUEST_TIMEOUT` | int | `60` | Request timeout in seconds (5-300) |
 | `API_RATE_LIMIT_SEARCH` | int | `30` | Rate limit for /search (requests/min) |
 | `API_RATE_LIMIT_FETCH` | int | `60` | Rate limit for /fetch (requests/min) |
-| `API_RATE_LIMIT_NEWS` | int | `30` | Rate limit for /news (requests/min) |
-| `API_RATE_LIMIT_SCHOLAR` | int | `30` | Rate limit for /scholar (requests/min) |
+| `API_RATE_LIMIT_NEWS` | int | `30` | Rate limit for /news and /scholar (requests/min) |
 | `API_RATE_LIMIT_DEFAULT` | int | `100` | Default rate limit (requests/min) |
 | `API_KEYS_HASHED` | str | `""` | Comma-separated hashed API keys |
 | `API_ALLOW_NO_AUTH` | bool | `false` | Allow unauthenticated access (not recommended) |
@@ -467,7 +466,7 @@ Search Google Scholar for academic papers with rich metadata.
 
 **Authentication**: Required (`X-API-Key` header)
 
-**Rate Limit**: 30 requests/minute (configurable)
+**Rate Limit**: 30 requests/minute (shared with /news, configurable via `API_RATE_LIMIT_NEWS`)
 
 **Request Body**:
 ```json
@@ -654,8 +653,7 @@ Rate limits are configurable per endpoint:
 ```bash
 API_RATE_LIMIT_SEARCH=30    # 30 requests/minute for /search
 API_RATE_LIMIT_FETCH=60     # 60 requests/minute for /fetch
-API_RATE_LIMIT_NEWS=30      # 30 requests/minute for /news
-API_RATE_LIMIT_SCHOLAR=30   # 30 requests/minute for /scholar
+API_RATE_LIMIT_NEWS=30      # 30 requests/minute for /news and /scholar
 API_RATE_LIMIT_DEFAULT=100  # Default for unknown endpoints
 ```
 
@@ -825,10 +823,11 @@ The API uses FastAPI's dependency injection system:
    - Validates `X-API-Key` header
    - Returns verified key or raises 401
 
-2. **Rate Limit Acquisition** (`search_rate_limit`, `fetch_rate_limit`, `news_rate_limit`, `scholar_rate_limit`):
+2. **Rate Limit Acquisition** (`search_rate_limit`, `fetch_rate_limit`, `news_rate_limit`):
    - Depends on `verify_api_key` (ensures auth before rate limiting)
    - Acquires slot in sliding window
    - Returns `RateLimitInfo`
+   - Note: `/scholar` endpoint uses `news_rate_limit` (shares rate limit with `/news`)
 
 3. **Request Pool** (`rate_limited_request`):
    - Acquires global semaphore
@@ -914,8 +913,7 @@ API_REQUEST_TIMEOUT=60
 # ===========================================
 API_RATE_LIMIT_SEARCH=30
 API_RATE_LIMIT_FETCH=60
-API_RATE_LIMIT_NEWS=30
-API_RATE_LIMIT_SCHOLAR=30
+API_RATE_LIMIT_NEWS=30      # Also applies to /scholar endpoint
 API_RATE_LIMIT_DEFAULT=100
 
 # ===========================================

@@ -148,6 +148,49 @@ class TextFormatter:
         return "\n".join(lines)
 
     @staticmethod
+    def format_scholar(
+        results: list,
+        query: str,
+        error: Optional[OutputError] = None,
+    ) -> str:
+        """Format scholar results as text."""
+        if error:
+            return TextFormatter._format_error("GOOGLE SCHOLAR", error)
+
+        count = len(results)
+
+        lines = [
+            "=" * 50,
+            "GOOGLE SCHOLAR",
+            "=" * 50,
+            f"Query: {query}",
+            f"Count: {count}",
+            "-" * 50,
+        ]
+
+        for i, r in enumerate(results, 1):
+            lines.append(f"{i}. {r.title}")
+            lines.append(f"  URL: {r.url}")
+            if r.authors:
+                authors_str = ", ".join(r.authors[:3])
+                if len(r.authors) > 3:
+                    authors_str += " et al."
+                lines.append(f"  Authors: {authors_str}")
+            if r.publication_year:
+                lines.append(f"  Year: {r.publication_year}")
+            if r.venue:
+                lines.append(f"  Venue: {r.venue}")
+            if r.citation_count:
+                lines.append(f"  Citations: {r.citation_count}")
+            if r.snippet:
+                snippet_preview = r.snippet[:100] + "..." if len(r.snippet) > 100 else r.snippet
+                lines.append(f"  Abstract: {snippet_preview}")
+            lines.append("")
+
+        lines.append("-" * 50)
+        return "\n".join(lines)
+
+    @staticmethod
     def _format_error(section: str, error: OutputError) -> str:
         """Format error message as text."""
         return "\n".join([
@@ -250,6 +293,25 @@ class JSONFormatter:
         }, indent=2, ensure_ascii=False)
 
     @staticmethod
+    def format_scholar(
+        results: list,
+        query: str,
+        error: Optional[OutputError] = None,
+    ) -> str:
+        """Format scholar results as JSON."""
+        if error:
+            return JSONFormatter._format_error("scholar", error, query=query)
+
+        return json.dumps({
+            "status": "success",
+            "type": "scholar",
+            "query": query,
+            "count": len(results),
+            "results": [r.to_dict() for r in results],
+            "errors": [],
+        }, indent=2, ensure_ascii=False)
+
+    @staticmethod
     def _format_error(result_type: str, error: OutputError, **metadata) -> str:
         """Format error as JSON."""
         data = {
@@ -303,3 +365,15 @@ class OutputFormatter:
         if mode == OUTPUT_JSON:
             return JSONFormatter.format_news(news_list, **kwargs)
         return TextFormatter.format_news(news_list, **kwargs)
+
+    @staticmethod
+    def format_scholar(
+        results: list,
+        query: str,
+        mode: str = OUTPUT_TEXT,
+        **kwargs
+    ) -> str:
+        """Format scholar results."""
+        if mode == OUTPUT_JSON:
+            return JSONFormatter.format_scholar(results, query, **kwargs)
+        return TextFormatter.format_scholar(results, query, **kwargs)

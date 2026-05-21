@@ -6,6 +6,7 @@ from typing import Any, Optional
 import markdownify
 import nodriver as uc
 
+from .cleaning import clean_html, clean_markdown
 from .config import BING_URL_TEMPLATE
 from .utils import (
     CaptchaError,
@@ -40,14 +41,18 @@ def _check_captcha(url: str, page_source: str = "") -> bool:
     ]
     content_lower = page_source.lower()
     has_captcha_content = any(pattern in content_lower for pattern in captcha_patterns)
-    # Only flag as captcha if it's an actual captcha service, not just the word
+    # Only flag as captcha if it's an actual captcha service with evidence of a challenge
+    has_captcha_iframe = 'id="captcha"' in content_lower or 'class="captcha"' in content_lower
     has_explicit_captcha = (
-        "recaptcha" in content_lower
-        or "hcaptcha" in content_lower
+        # Strict check: explicit captcha service with challenge evidence
+        ("recaptcha" in content_lower and ("g-recaptcha" in content_lower or "google.com/recaptcha" in content_lower))
+        or ("hcaptcha" in content_lower and ("h-captcha" in content_lower or "hcaptcha.com" in content_lower))
         or "cf-challenge" in content_lower
-        or ("captcha" in content_lower and "/captcha/" in content_lower)
+        # Fallback: any mention of captcha services (catches simple text mentions)
+        or "recaptcha" in content_lower
+        or "hcaptcha" in content_lower
     )
-    return has_captcha_content or has_explicit_captcha
+    return has_captcha_content or has_explicit_captcha or has_captcha_iframe
 
 
 def _find_system_chrome_path() -> Optional[str]:
@@ -528,10 +533,17 @@ async def _fetch_browser_impl(
         if _check_captcha(tab.url, page_content):
             raise CaptchaError("Captcha detected")
 
+        # Clean HTML before conversion
+        cleaned_html = clean_html(page_content)
+
         markdown = markdownify.markdownify(
-            page_content,
+            cleaned_html,
             heading_style="ATX",
         )
+
+        # Post-clean markdown
+        markdown = clean_markdown(markdown)
+
         return markdown
 
     finally:

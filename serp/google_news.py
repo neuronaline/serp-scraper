@@ -8,6 +8,29 @@ It follows the workflow described in GOOGLE_NEWS_NASIL_CALISIR.md:
 4. Deduplicate results
 5. Return clean news lists
 
+FETCH STRATEGY (BS4 Primary, Browser Fallback):
+===============================================
+For article content extraction (get_news_with_content):
+1. PRIMARY: BS4 + HTTP fetch
+   - Fast HTTP request via httpx
+   - HTML parsed and cleaned with BeautifulSoup4
+   - Converts to Markdown via markdownify
+   - Advantages: Low resource usage, fast execution
+
+2. FALLBACK: Browser-based (nodriver)
+   - Invoked only when BS4 fetch fails or returns unusable content
+   - Handles JavaScript-rendered pages, anti-bot measures
+   - Higher resource usage but more reliable
+
+Error conditions that trigger browser fallback:
+- Empty or minimal content (<50 chars)
+- CAPTCHA detection
+- Parse errors
+- Connection/timeout errors
+
+Note: The RSS feed itself uses HTTP (no JS required), but when extracting
+full article content from individual news URLs, the BS4+browser strategy applies.
+
 Example:
     >>> import asyncio
     >>> from serp.google_news import GoogleNewsClient
@@ -32,6 +55,7 @@ from urllib.parse import urlencode, urlparse
 import httpx
 
 from .cache import get_cache
+from .cleaning import clean_html, clean_markdown
 from .config_pydantic import SerpConfig, get_default_config
 from .types import RetryPolicy
 from .utils import (
@@ -654,21 +678,218 @@ class GoogleNewsClient:
         max_results: int = 50,
         content_queries: Optional[list[str]] = None,
     ) -> list[NewsResult]:
-        """Get news with article content extraction.
+        """Get news with full article content extraction.
 
-        Note: This method is a stub. Full article content extraction requires
-        visiting each article URL, which is not yet implemented.
+        This method:
+        1. Fetches news items via RSS (same as get_news)
+        2. For each article URL, extracts full content using BS4 + browser fallback
 
         Args:
             company_name: Name of the company
             max_results: Maximum number of news items
-            content_queries: Not yet implemented
+            content_queries: Not used (reserved for future query expansion)
 
         Returns:
-            List of NewsResult objects (content extraction pending)
+            List of NewsResult objects with description field populated with article content
+
+        Example:
+            >>> results = await client.get_news_with_content("Tesla")
+            >>> for r in results:
+            ...     print(f"{r.title}: {r.description[:100]}...")
         """
-        # Currently just returns news without content extraction
-        return await self.get_news(company_name, max_results)
+        # Get news items via RSS (fast, reliable)
+        news_items = await self.get_news(company_name, max_results)
+
+        if not news_items:
+            return []
+
+        # For each news item, fetch full article content
+        for item in news_items:
+            # Determine which URL to fetch (prefer original_url if available)
+            fetch_url = item.original_url or item.url
+
+            try:
+                content = await self._fetch_article_content(fetch_url)
+                if content:
+                    # Truncate content if too long (keep first ~500 chars as description)
+                    item.description = content[:500] + ("..." if len(content) > 500 else "")
+            except Exception as e:
+                logger.debug(f"Failed to fetch article content for {fetch_url}: {e}")
+                # Keep original description from RSS if content fetch fails
+                pass
+
+        return news_items
+
+    async def _fetch_article_content(self, url: str) -> str:
+        """Fetch article content using BS4 primary, browser fallback.
+
+        Strategy:
+        1. Try BS4 + HTTP (fast, lightweight)
+        2. On failure → fallback to browser (handles JS/CAPTCHA)
+
+        Args:
+            url: Article URL to fetch
+
+        Returns:
+            Article content as Markdown string
+
+        Raises:
+            Exception: If both BS4 and browser fail
+        """
+        # Phase 1: Try BS4 primary
+        try:
+            content = await self._fetch_article_bs4(url)
+            if content and len(content.strip()) > 50:
+                logger.debug(f"BS4 fetch successful for article: {url}")
+                return content
+            else:
+                logger.debug(f"BS4 returned minimal content for article, trying browser")
+                raise ParseError("Minimal content from BS4")
+        except Exception as bs4_error:
+            logger.debug(f"BS4 fetch failed for article, falling back to browser: {bs4_error}")
+
+        # Phase 2: Browser fallback
+        try:
+            content = await self._fetch_article_browser(url)
+            logger.debug(f"Browser fetch successful for article: {url}")
+            return content
+        except Exception as browser_error:
+            logger.warning(f"Both BS4 and browser failed for article {url}: {browser_error}")
+            raise browser_error
+
+    async def _fetch_article_bs4(self, url: str) -> str:
+        """Fetch article using HTTP + BeautifulSoup4.
+
+        Args:
+            url: Article URL to fetch
+
+        Returns:
+            Article content as Markdown string
+
+        Raises:
+            ProxyError: If HTTP request fails
+            PageTimeoutError: If request times out
+        """
+        import httpx
+
+        proxy = self._get_random_proxy()
+        proxy_url = self._build_proxy_url(proxy)
+
+        headers = {
+            "User-Agent": _random_user_agent(),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": f"{self._news_settings.language}-{self._news_settings.country},{self._news_settings.language};q=0.9",
+        }
+
+        timeout = float(self._config.search.timeout)
+
+        async with httpx.AsyncClient(
+            proxy=proxy_url,
+            timeout=timeout,
+            follow_redirects=True,
+            headers=headers,
+        ) as client:
+            response = await client.get(url)
+            if response.status_code != 200:
+                raise ProxyError(f"Article HTTP fetch failed with status {response.status_code}")
+
+            html_content = response.text
+            logger.debug(f"Fetched article HTML ({len(html_content)} chars)")
+
+            # Clean HTML with BeautifulSoup4
+            cleaned_html = self._clean_article_html(html_content)
+
+            # Convert to Markdown
+            import markdownify
+            markdown = markdownify.markdownify(cleaned_html, heading_style="ATX")
+
+            # Post-clean markdown
+            markdown = self._clean_article_markdown(markdown)
+
+            return markdown
+
+    async def _fetch_article_browser(self, url: str) -> str:
+        """Fetch article using nodriver browser.
+
+        Args:
+            url: Article URL to fetch
+
+        Returns:
+            Article content as Markdown string
+
+        Raises:
+            PageTimeoutError: If page load times out
+            ProxyError: If browser fails
+        """
+        from .parsers import _create_browser, _cleanup_browser
+
+        proxy = self._get_random_proxy()
+        browser = await _create_browser(proxy, self._config.search.headless)
+        if browser is None:
+            raise ProxyError("Failed to start browser for article fetch")
+
+        tab = None
+        try:
+            tab = await browser.get(url)
+            await tab.wait(3)  # Wait for JS to execute
+
+            page_content = await tab.get_content()
+
+            # Check for CAPTCHA
+            current_url = (tab.url or "").lower()
+            if "sorry/app" in current_url or "/captcha/" in current_url:
+                from .utils import CaptchaError
+                raise CaptchaError("CAPTCHA detected")
+
+            # Clean HTML before conversion
+            cleaned_html = clean_html(page_content)
+
+            # Convert to Markdown
+            import markdownify
+            markdown = markdownify.markdownify(cleaned_html, heading_style="ATX")
+
+            # Post-clean markdown
+            markdown = clean_markdown(markdown)
+
+            return markdown
+
+        finally:
+            if tab is not None:
+                try:
+                    await tab.close()
+                except Exception:
+                    pass
+
+            try:
+                await _cleanup_browser(browser)
+            except Exception:
+                pass
+
+    def _clean_article_html(self, html: str) -> str:
+        """Clean article HTML using BeautifulSoup4.
+
+        This method delegates to the cleaning module's clean_html function.
+
+        Args:
+            html: Raw HTML string
+
+        Returns:
+            Cleaned HTML string
+        """
+        return clean_html(html)
+
+    def _clean_article_markdown(self, markdown: str) -> str:
+        """Clean Markdown content after HTML-to-Markdown conversion.
+
+        This method delegates to the cleaning module's clean_markdown function.
+
+        Args:
+            markdown: Markdown string
+
+        Returns:
+            Cleaned Markdown string
+        """
+        return clean_markdown(markdown)
 
     async def __aenter__(self) -> "GoogleNewsClient":
         """Enter async context manager."""
