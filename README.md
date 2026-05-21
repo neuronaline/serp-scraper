@@ -259,23 +259,32 @@ SERP_USER_AGENT=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `custom_proxies` | str | `""` | Comma-separated proxy URLs from env |
-| `proxy_strategy` | str | `"dataimpulse_first"` | Proxy selection: "random" or "dataimpulse_first" |
+| **Proxy Settings** | | | |
 | `dataimpulse_gateway` | str | `None` | DataImpulse gateway URL |
 | `dataimpulse_user` | str | `None` | DataImpulse username |
 | `dataimpulse_pass` | str | `None` | DataImpulse password |
-| `log_level` | str | `"WARNING"` | Logging level (DEBUG, INFO, WARNING, ERROR) |
+| `dataimpulse_protocol` | str | `"http"` | DataImpulse proxy protocol ("http" or "socks5") |
+| `dataimpulse_country` | str | `None` | DataImpulse country code (optional) |
+| `dataimpulse_sessid` | str | `None` | DataImpulse session ID for sticky proxy (optional) |
+| `dataimpulse_sessttl` | int | `None` | DataImpulse session TTL in minutes (optional) |
+| `custom_proxies` | str | `""` | Comma-separated proxy URLs |
+| `proxy_strategy` | str | `"dataimpulse_first"` | Proxy selection: "random" or "dataimpulse_first" |
+| **Cache Settings** | | | |
+| `cache_enabled` | bool | `true` | Enable/disable caching |
+| `cache_dir` | str | `".cache/serp"` | Cache directory path |
+| `cache_ttl` | int | `86400` | Cache TTL in seconds (min 60) |
+| **Retry Settings** | | | |
 | `max_retries` | int | `3` | Maximum retry attempts (1-10) |
 | `retry_delay_min` | float | `0.5` | Minimum retry delay in seconds |
 | `retry_delay_max` | float | `2.0` | Maximum retry delay in seconds |
 | `exponential_backoff` | bool | `false` | Use exponential backoff |
-| `timeout` | int | `30` | Request timeout in seconds (5-120) |
-| `cache_enabled` | bool | `true` | Enable/disable caching |
-| `cache_dir` | str | `".cache/serp"` | Cache directory path |
-| `cache_ttl` | int | `86400` | Cache TTL in seconds (min 60) |
+| **Search Settings** | | | |
 | `default_source` | str | `"auto"` | Default search source: "google", "bing", or "auto" |
 | `headless` | bool | `false` | Run browser in headless mode (requires virtual display when false) |
+| `timeout` | int | `30` | Request timeout in seconds (5-120) |
 | `user_agent` | str | `None` | Custom user agent string |
+| **Logging** | | | |
+| `log_level` | str | `"WARNING"` | Logging level (DEBUG, INFO, WARNING, ERROR) |
 
 ### Environment Variables
 
@@ -284,6 +293,10 @@ SERP_USER_AGENT=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
 | `SERP_DATAIMPULSE_GATEWAY` | DataImpulse gateway URL | - |
 | `SERP_DATAIMPULSE_USER` | DataImpulse username | - |
 | `SERP_DATAIMPULSE_PASS` | DataImpulse password | - |
+| `SERP_DATAIMPULSE_PROTOCOL` | DataImpulse proxy protocol | `http` |
+| `SERP_DATAIMPULSE_COUNTRY` | DataImpulse country code (optional) | - |
+| `SERP_DATAIMPULSE_SESSID` | DataImpulse session ID for sticky proxy (optional) | - |
+| `SERP_DATAIMPULSE_SESSTTL` | DataImpulse session TTL in minutes (optional) | - |
 | `SERP_CUSTOM_PROXIES` | Comma-separated proxy URLs | - |
 | `SERP_PROXY_STRATEGY` | Proxy selection strategy | `dataimpulse_first` |
 | `SERP_LOG_LEVEL` | Logging level | `WARNING` |
@@ -297,6 +310,22 @@ SERP_USER_AGENT=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
 | `SERP_TIMEOUT` | Request timeout in seconds | `30` |
 | `SERP_DEBUG` | Enable debug logging | `false` |
 | `SERP_DOTENV_FILE` | Path to .env file | Auto-detect |
+| **API Settings** | | |
+| `API_HOST` | API server host | `0.0.0.0` |
+| `API_PORT` | API server port | `8000` |
+| `API_DEBUG` | API debug mode | `false` |
+| `API_MAX_CONCURRENT_REQUESTS` | Max concurrent requests (pool size) | `15` |
+| `API_REQUEST_TIMEOUT` | Request timeout in seconds | `60` |
+| `API_RATE_LIMIT_SEARCH` | Rate limit for /search (req/min) | `30` |
+| `API_RATE_LIMIT_FETCH` | Rate limit for /fetch (req/min) | `60` |
+| `API_RATE_LIMIT_NEWS` | Rate limit for /news (req/min) | `30` |
+| `API_RATE_LIMIT_DEFAULT` | Default rate limit (req/min) | `100` |
+| `API_KEYS_HASHED` | Comma-separated hashed API keys | - |
+| `API_ALLOW_NO_AUTH` | Allow unauthenticated access | `false` |
+| `API_LOG_LEVEL` | API logging level | `INFO` |
+| `API_LOG_DIR` | API log directory | `logs` |
+| `API_LOG_RETENTION_DAYS` | Log retention days | `7` |
+| `API_CORS_ORIGINS` | CORS allowed origins (comma-separated) | - |
 
 ## API Reference
 
@@ -670,8 +699,6 @@ uvicorn api.main:app --host 0.0.0.0 --port 8000
 - `POST /api/v1/fetch` - Fetch URL content (supports optional `compress` field)
 - `POST /api/v1/news` - Get Google News articles
 - `POST /api/v1/scholar` - Search Google Scholar articles
-- `GET /api/v1/keys` - List API keys (admin)
-- `POST /api/v1/keys` - Create API key (admin)
 
 ### Authentication
 
@@ -700,11 +727,13 @@ serp-scraper/
 │   ├── types.py             # Type definitions (SearchResult, RetryPolicy, etc.)
 │   └── utils.py             # Exceptions, helpers, constants
 ├── api/                     # REST API (optional)
+│   ├── __init__.py
 │   ├── main.py              # FastAPI application
 │   ├── config.py            # API configuration (APISettings, RateLimitConfig)
 │   ├── deps.py              # DI: auth, rate limit, semaphore
 │   ├── exceptions.py        # Custom exception classes
 │   ├── models/              # Pydantic models
+│   │   ├── __init__.py
 │   │   ├── requests.py      # Request schemas
 │   │   └── responses.py     # Response schemas
 │   ├── routers/             # API routes
@@ -715,18 +744,23 @@ serp-scraper/
 │   │   ├── news.py          # POST /api/v1/news
 │   │   └── scholar.py       # POST /api/v1/scholar
 │   ├── middleware/          # Middleware
+│   │   ├── __init__.py
 │   │   ├── rate_limit.py    # Sliding window rate limiter
 │   │   └── logging_middleware.py
 │   ├── utils/               # Backward-compat re-exports
+│   │   ├── __init__.py
 │   │   └── compression.py   # Re-exports from serp.compression
 │   └── cli/                 # API CLI tools
+│       ├── __init__.py
 │       └── keys.py          # API key generation
 ├── tests/                   # Test suite
+│   ├── __init__.py
 │   ├── conftest.py          # Fixtures, global state reset
-│   ├── test_serp.py         # Core library tests (505+ tests)
+│   ├── test_serp.py         # Core library tests
 │   ├── test_cache.py        # Cache tests
 │   ├── test_google_news.py  # Google News tests
-│   └── api/                 # API tests (placeholder)
+│   └── api/                 # API tests
+│       └── __init__.py
 ├── main.py                  # Interactive CLI tool
 ├── .env.example            # Environment variables template
 ├── pyproject.toml          # Project metadata
@@ -834,8 +868,9 @@ Install with `pip install serp-scraper[api]` for REST API support:
 | Package | Version | Purpose |
 |---------|---------|---------|
 | fastapi | >=0.100.0 | REST API framework |
-| uvicorn | >=0.23.0 | ASGI server |
-| passlib | >=1.7.4 | Password hashing |
+| uvicorn[standard] | >=0.23.0 | ASGI server |
+| passlib[bcrypt] | >=1.7.4 | Password hashing |
+| bcrypt | <4.1.0 | Password hashing |
 
 ## Development Dependencies
 
