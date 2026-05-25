@@ -255,22 +255,36 @@ def _extract_js_value(obj) -> Any:
 
 
 async def _parse_google_results(tab: uc.Tab, page_num: int) -> list[dict[str, Any]]:
-    """Parse Google search results using JavaScript evaluation."""
+    """Parse Google search results using JavaScript evaluation.
+
+    Polls for results with increasing delays to handle slow-rendering pages.
+    This significantly reduces intermittent "no results" errors when the DOM
+    hasn't finished populating before the first parse attempt.
+    """
     js_code = """
     (function() {
         const results = [];
-        const items = document.querySelectorAll('div.MjjYud, div#rso > div, div.g');
+        // Combined selector: try all known result container patterns (union).
+        // div[data-hveid] is a broad fallback that catches many Google containers
+        // including non-organic sections; those are filtered out below.
+        const items = document.querySelectorAll(
+            'div.g, div#rso > div, div.MjjYud, div[data-hveid]'
+        );
         items.forEach((item, idx) => {
+            // Skip items inside known non-organic sections (e.g., "People also ask",
+            // knowledge panels, image packs, related searches).
+            if (item.closest('#botstuff, [data-attrid], .kno-kp, .related-question-pair')) return;
+
             const h3 = item.querySelector('h3');
             if (!h3) return;
             const title = h3.innerText || h3.textContent;
 
-            const linkEl = item.querySelector('a[href][data-ved], a.zReHs, a[jsname="UWckNb"]');
+            const linkEl = item.querySelector('a[href][data-ved], a.zReHs, a[jsname="UWckNb"], a[ping]');
             if (!linkEl) return;
             const url = linkEl.href;
             if (!url || url.startsWith('javascript:') || url.startsWith('/')) return;
 
-            const descEl = item.querySelector('div.VwiC3b, span.aCOpRe, div[data-sncf]');
+            const descEl = item.querySelector('div.VwiC3b, span.aCOpRe, div[data-sncf], span.st');
             const desc = descEl ? (descEl.innerText || descEl.textContent) : '';
 
             results.push({
@@ -284,40 +298,61 @@ async def _parse_google_results(tab: uc.Tab, page_num: int) -> list[dict[str, An
     })()
     """
 
-    try:
-        js_results = await tab.evaluate(js_code)
-        actual_results = _extract_js_value(js_results)
+    # Poll for results with increasing delays (0.5s, 1s, 2s, 3s)
+    max_parse_attempts = 4
+    seen_urls = set()
+    results = []
+    base_rank = (page_num - 1) * 10
 
-        if not actual_results or not isinstance(actual_results, list):
-            return []
+    for parse_attempt in range(1, max_parse_attempts + 1):
+        try:
+            js_results = await tab.evaluate(js_code)
+            actual_results = _extract_js_value(js_results)
 
-        seen_urls = set()
-        results = []
-        base_rank = (page_num - 1) * 10
+            if actual_results and isinstance(actual_results, list):
+                seen_urls.clear()
+                results.clear()
 
-        for idx, r in enumerate(actual_results):
-            if not isinstance(r, dict):
-                continue
-            url = r.get('url', '')
-            title = r.get('title', '')
-            if not title or not url or url in seen_urls:
-                continue
-            seen_urls.add(url)
-            results.append({
-                'rank': base_rank + idx + 1,
-                'title': title,
-                'url': url,
-                'description': r.get('description', '')
-            })
+                for idx, r in enumerate(actual_results):
+                    if not isinstance(r, dict):
+                        continue
+                    url = r.get('url', '')
+                    title = r.get('title', '')
+                    if not title or not url or url in seen_urls:
+                        continue
+                    seen_urls.add(url)
+                    results.append({
+                        'rank': base_rank + idx + 1,
+                        'title': title,
+                        'url': url,
+                        'description': r.get('description', '')
+                    })
 
-        return results
-    except Exception as e:
-        logger.error(f"Failed to parse Google results: {e}")
-        return []
+            if results:
+                logger.debug(f"Google parse succeeded on attempt {parse_attempt} ({len(results)} results)")
+                return results
+
+            if parse_attempt < max_parse_attempts:
+                delay = 0.5 * (2 ** (parse_attempt - 1))  # 0.5, 1.0, 2.0
+                logger.debug(f"Google parse attempt {parse_attempt} returned 0 results, "
+                             f"retrying in {delay:.1f}s...")
+                await asyncio.sleep(delay)
+
+        except Exception as e:
+            if parse_attempt < max_parse_attempts:
+                logger.debug(f"Google parse attempt {parse_attempt} failed: {e}, retrying...")
+                await asyncio.sleep(0.5 * (2 ** (parse_attempt - 1)))
+            else:
+                logger.error(f"Failed to parse Google results after {max_parse_attempts} attempts: {e}")
+
+    return []
 
 
 async def _parse_bing_results(tab: uc.Tab, page_num: int) -> list[dict[str, Any]]:
-    """Parse Bing search results using JavaScript evaluation."""
+    """Parse Bing search results using JavaScript evaluation.
+
+    Polls for results with increasing delays to handle slow-rendering pages.
+    """
     js_code = """
     (function() {
         const results = [];
@@ -346,43 +381,63 @@ async def _parse_bing_results(tab: uc.Tab, page_num: int) -> list[dict[str, Any]
     })()
     """
 
-    try:
-        js_results = await tab.evaluate(js_code)
-        actual_results = _extract_js_value(js_results)
+    # Poll for results with increasing delays (0.5s, 1s, 2s, 3s)
+    max_parse_attempts = 4
+    seen_urls = set()
+    results = []
+    base_rank = (page_num - 1) * 10
 
-        if not actual_results or not isinstance(actual_results, list):
-            return []
+    for parse_attempt in range(1, max_parse_attempts + 1):
+        try:
+            js_results = await tab.evaluate(js_code)
+            actual_results = _extract_js_value(js_results)
 
-        seen_urls = set()
-        results = []
-        base_rank = (page_num - 1) * 10
+            if actual_results and isinstance(actual_results, list):
+                seen_urls.clear()
+                results.clear()
 
-        for idx, r in enumerate(actual_results):
-            if not isinstance(r, dict):
-                continue
-            url = r.get('url', '')
-            # Extract real URL from Bing redirect URLs
-            original_url = url
-            url = _extract_bing_real_url(url)
-            if original_url != url:
-                logger.debug(f"Resolved Bing redirect: {original_url[:50]}... -> {url[:50]}...")
-            elif "bing.com/ck/a" in original_url:
-                logger.warning(f"Failed to extract real URL from Bing redirect: {original_url[:50]}...")
-            title = r.get('title', '')
-            if not title or not url or url in seen_urls:
-                continue
-            seen_urls.add(url)
-            results.append({
-                'rank': base_rank + idx + 1,
-                'title': title,
-                'url': url,
-                'description': r.get('description', '')
-            })
+                for idx, r in enumerate(actual_results):
+                    if not isinstance(r, dict):
+                        continue
+                    url = r.get('url', '')
+                    # Extract real URL from Bing redirect URLs
+                    original_url = url
+                    url = _extract_bing_real_url(url)
+                    if original_url != url:
+                        logger.debug(f"Resolved Bing redirect: {original_url[:50]}... -> {url[:50]}...")
+                    elif "bing.com/ck/a" in original_url:
+                        logger.warning(
+                            f"Failed to extract real URL from Bing redirect: {original_url[:50]}..."
+                        )
+                    title = r.get('title', '')
+                    if not title or not url or url in seen_urls:
+                        continue
+                    seen_urls.add(url)
+                    results.append({
+                        'rank': base_rank + idx + 1,
+                        'title': title,
+                        'url': url,
+                        'description': r.get('description', '')
+                    })
 
-        return results
-    except Exception as e:
-        logger.error(f"Failed to parse Bing results: {e}")
-        return []
+            if results:
+                logger.debug(f"Bing parse succeeded on attempt {parse_attempt} ({len(results)} results)")
+                return results
+
+            if parse_attempt < max_parse_attempts:
+                delay = 0.5 * (2 ** (parse_attempt - 1))  # 0.5, 1.0, 2.0
+                logger.debug(f"Bing parse attempt {parse_attempt} returned 0 results, "
+                             f"retrying in {delay:.1f}s...")
+                await asyncio.sleep(delay)
+
+        except Exception as e:
+            if parse_attempt < max_parse_attempts:
+                logger.debug(f"Bing parse attempt {parse_attempt} failed: {e}, retrying...")
+                await asyncio.sleep(0.5 * (2 ** (parse_attempt - 1)))
+            else:
+                logger.error(f"Failed to parse Bing results after {max_parse_attempts} attempts: {e}")
+
+    return []
 
 
 async def _search_impl(
@@ -417,19 +472,31 @@ async def _search_impl(
         # Smart wait: wait for search results (or CAPTCHA page) to actually appear
         # Instead of a fixed sleep, we wait for known DOM elements to materialize.
         # This handles slow proxies/connections gracefully without a hardcoded limit.
+        # Multiple selector sets are tried as fallback to handle DOM structure changes.
         try:
             if source == "bing":
                 # Bing wraps results in li.b_algo elements
-                await tab.select("li.b_algo, #b_results", timeout=15)
+                for bing_sel in ["li.b_algo", "#b_results", "ol#b_results"]:
+                    try:
+                        await tab.select(bing_sel, timeout=8)
+                        break
+                    except Exception:
+                        continue
                 # Extra short wait for Bing to finish rendering all results
                 await asyncio.sleep(1)
             else:
                 # Google wraps results in div.g / div#rso elements
-                await tab.select("div.g, div#rso, div.MjjYud", timeout=15)
+                # Try multiple selector variations to handle DOM changes
+                for google_sel in ["div.g", "div#rso > div", "div.MjjYud", "div[data-hveid]"]:
+                    try:
+                        await tab.select(google_sel, timeout=8)
+                        break
+                    except Exception:
+                        continue
         except Exception as e:
             logger.debug(f"Smart wait for {source} results timed out: {e}")
             # Fallback: small extra wait before checking for errors/CAPTCHA
-            await asyncio.sleep(1)
+            await asyncio.sleep(2)
 
         # Check for CAPTCHA / error pages (check both URL and page content)
         current_url = (tab.url or "").lower()

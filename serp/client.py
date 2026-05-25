@@ -383,9 +383,13 @@ class SerpClient:
                     break
                 except Exception as e:
                     last_error = e
+                    if await self._retry_failed(attempt, e, src_name, retry):
+                        continue
                     break
 
-            if source is not None:
+            # Only break out of outer loop when a specific source was explicitly requested.
+            # When source is None or "auto", continue to the next source (Bing fallback).
+            if source is not None and source != "auto":
                 break
 
         if last_error:
@@ -469,7 +473,9 @@ class SerpClient:
                         continue
                     break
 
-            if source is not None:
+            # Only break out of outer loop when a specific source was explicitly requested.
+            # When source is None or "auto", continue to the next source (Bing fallback).
+            if source is not None and source != "auto":
                 break
 
         if last_error:
