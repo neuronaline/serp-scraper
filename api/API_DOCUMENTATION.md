@@ -343,8 +343,13 @@ Fetch URL content and return as Markdown.
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `url` | string (URL) | Yes | - | URL to fetch |
-| `prefer_browser` | boolean | No | `true` | Use browser instead of HTTP |
+| `prefer_browser` | boolean | No | `true` | **Deprecated.** When `true`, uses browser first with BS4 fallback. When `false` (default), uses BS4 first with automatic JavaScript detection and browser fallback for JS-heavy pages. |
 | `compress` | boolean | No | `false` | Compress long content (>10K chars). When enabled, takes head (35%), middle (15%), and tail (50%) portions, marking truncated sections. |
+
+**Note:** The `prefer_browser` parameter controls fetch order but is supplemented by automatic JavaScript detection. When `prefer_browser=false` (the default and recommended setting), the system:
+1. Attempts BS4 (HTTP + BeautifulSoup) first
+2. **If JavaScript is detected in the HTML**, immediately falls back to browser
+3. If BS4 fetch fails for any reason, falls back to browser
 
 **Response (Success)**:
 ```json
@@ -387,6 +392,21 @@ Fetch URL content and return as Markdown.
   }
 }
 ```
+
+**JavaScript Detection & Browser Execution**:
+
+The fetch endpoint automatically detects whether a page contains JavaScript and handles it accordingly:
+
+1. **Lightweight HTTP Fetch (BS4)**: For static HTML pages without JavaScript, uses fast HTTP requests + BeautifulSoup4 parsing. This is the primary method for pages that don't require JavaScript execution.
+
+2. **Browser-Based Fetch (nodriver)**: Automatically invoked when:
+   - The page contains `<script>` tags with JavaScript code or external JS files
+   - The BS4 fetch fails or returns minimal content (<100 characters)
+   - Any retryable error occurs (timeout, proxy, CAPTCHA, etc.)
+
+3. **Page Load Guarantee**: Whether using HTTP or browser fetch:
+   - HTTP fetch: Waits for complete HTTP response with all redirect handling
+   - Browser fetch: Waits for the `load` event plus additional time (1s) for JavaScript execution and dynamic content rendering
 
 **Response Fields**:
 | Field | Type | Description |

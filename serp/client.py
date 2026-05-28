@@ -9,17 +9,20 @@ Web page fetching uses a two-tier fallback strategy:
 
 1. PRIMARY: BS4 (BeautifulSoup4) + HTTP
    - Fast, lightweight HTTP request via httpx
-   - HTML parsed and cleaned with BeautifulSoup4
+   - JavaScript detection in raw HTML (immediate browser fallback if JS found)
+   - HTML parsed and cleaned with BeautifulSoup4 (static pages only)
    - Converts cleaned HTML to Markdown via markdownify
    - Advantages: Low resource usage, fast execution, no browser overhead
 
 2. FALLBACK: Browser-based (nodriver)
-   - Invoked only when BS4 fetch fails or returns unusable content
+   - Invoked when page contains JavaScript (requires execution)
+   - Invoked when BS4 fetch fails or returns unusable content
    - Handles JavaScript-rendered pages, CAPTCHA, anti-bot measures
    - Higher resource usage but more reliable for complex pages
 
 Error conditions that trigger browser fallback:
-- Empty or minimal content (<50 chars)
+- JavaScript detected in HTML (requires browser execution)
+- Empty or minimal content (<100 chars)
 - CAPTCHA detection
 - Parse errors
 - Connection/timeout errors
@@ -748,8 +751,12 @@ class SerpClient:
 
         This is the primary, lightweight fetch method:
         - HTTP request via httpx
-        - HTML cleaning via BeautifulSoup4
+        - JavaScript detection in raw HTML
+        - HTML cleaning via BeautifulSoup4 (if no JS detected)
         - HTML-to-Markdown conversion via markdownify
+
+        If JavaScript is detected in the HTML, raises ParseError to trigger
+        browser fallback, which can execute JavaScript before parsing.
 
         Args:
             url: Target URL
@@ -760,10 +767,10 @@ class SerpClient:
 
         Raises:
             ProxyError: HTTP request failed
-            ParseError: Content parsing failed
+            ParseError: Content parsing failed or page contains JavaScript
         """
         import httpx
-        from .utils import _random_user_agent
+        from .utils import _random_user_agent, contains_javascript
 
         proxy_url = self._build_proxy_url(proxy)
 
@@ -785,6 +792,17 @@ class SerpClient:
 
             html_content = response.text
             logger.debug(f"Fetched HTML ({len(html_content)} chars) for url='{url}'")
+
+            # JavaScript detection: check if page contains JavaScript that
+            # requires a browser to execute. If detected, fall back to browser.
+            if contains_javascript(html_content):
+                logger.debug(
+                    f"JavaScript detected in url='{url}', "
+                    f"falling back to browser for execution"
+                )
+                raise ParseError(
+                    "Page contains JavaScript that requires browser execution"
+                )
 
             # Phase 1: Clean HTML with BeautifulSoup4
             cleaned_html = self._clean_html(html_content)

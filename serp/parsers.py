@@ -585,7 +585,14 @@ async def _fetch_browser_impl(
     proxy: Optional[dict] = None,
     headless: bool = False,
 ) -> str:
-    """Async browser fetch implementation using nodriver."""
+    """Async browser fetch implementation using nodriver.
+
+    Ensures the page is fully loaded before retrieving content. This includes:
+    1. Navigation to the target URL
+    2. Waiting for the page load event to fire
+    3. Additional wait time for JavaScript to execute and render content
+    4. Verification that the page loaded successfully
+    """
     browser = await _create_browser(proxy, headless)
     if browser is None:
         raise ParseError("Failed to start browser - nodriver may not be properly installed")
@@ -594,7 +601,20 @@ async def _fetch_browser_impl(
     try:
         # Navigate directly - proxy is configured via --proxy-server
         tab = await browser.get(url)
-        await tab.wait(3)
+
+        # Wait for page to fully load before accessing content.
+        # "load" event fires when all resources (scripts, stylesheets, images)
+        # have been fully downloaded and processed.
+        await tab.wait("load")
+
+        # Additional wait for JavaScript execution and dynamic content rendering.
+        # Some pages render content via JavaScript after the load event.
+        # This handles SPAs and dynamically-loaded content.
+        await asyncio.sleep(1)
+
+        # Verify page loaded successfully
+        if not tab.url or tab.url == "about:blank":
+            raise PageTimeoutError("Page did not load - no URL returned")
 
         page_content = await tab.get_content()
         if _check_captcha(tab.url, page_content):

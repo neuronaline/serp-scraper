@@ -147,11 +147,18 @@ from serp import SerpClient
 async def main():
     async with SerpClient() as client:
         # Fetch page content as Markdown
+        # Automatically detects JavaScript and uses browser if needed
         content = await client.fetch("https://example.com")
         print(content)
 
 asyncio.run(main())
 ```
+
+**Fetch Strategy:**
+- **Static pages (no JavaScript):** Uses fast HTTP + BeautifulSoup4
+- **JavaScript-detected pages:** Automatically uses browser (nodriver) for execution
+- **Failed/incomplete fetch:** Falls back to browser
+- **Full page load guarantee:** Browser waits for `load` event + 1s for JS rendering
 
 ### Content Compression
 
@@ -378,11 +385,11 @@ Search for a query and return results.
 
 Fetch a URL and return content as Markdown.
 
-**Fetch Strategy (per docs/Scraper Strategy.md):**
-- **Primary method:** BS4 (BeautifulSoup4) + HTTP - fast, lightweight
-- **Fallback:** Browser (nodriver) - triggered on BS4 failure (empty content, CAPTCHA, parse errors, timeouts)
-- **Default behavior:** BS4-first, browser fallback (`prefer_browser=False`)
-- **Forced browser:** Set `prefer_browser=True` to skip BS4 and use browser directly
+**Fetch Strategy:**
+- **Static pages (no JavaScript):** Uses fast HTTP + BeautifulSoup4 - low resource usage, fast execution
+- **JavaScript detected in HTML:** Immediately falls back to browser (nodriver) for execution
+- **Failed/incomplete fetch:** Falls back to browser (handles CAPTCHA, anti-bot measures)
+- **Full page load guarantee:** Browser waits for `load` event + 1s additional wait for JS rendering
 
 **Parameters:**
 - `url` (str): Target URL

@@ -195,3 +195,65 @@ def require_virtual_display() -> None:
             "a virtual display (DISPLAY environment variable). "
             "Either set DISPLAY (e.g., DISPLAY=:99) or run in headless mode."
         )
+
+
+def contains_javascript(html: str) -> bool:
+    """Detect if HTML content contains JavaScript code.
+
+    Checks for the presence of <script> tags with meaningful JavaScript content.
+    This is used to determine whether a page requires browser-based rendering
+    (to execute JavaScript) versus being fetchable via lightweight HTTP requests.
+
+    The detection looks for:
+    - <script> tags with non-empty src attributes (external JS files)
+    - <script> tags with inline JavaScript content (between opening and closing tags)
+
+    Note: We do NOT flag <script> tags with only JSON-LD structured data or
+    other non-JavaScript content types (e.g., type="application/ld+json").
+
+    Args:
+        html: Raw HTML string to analyze
+
+    Returns:
+        True if the page contains JavaScript that requires a browser to execute,
+        False if the page is static HTML that can be parsed directly
+
+    Example:
+        >>> html = '<html><body><script src="app.js"></script></body></html>'
+        >>> contains_javascript(html)
+        True
+
+        >>> html = '<html><body><p>Static content</p></body></html>'
+        >>> contains_javascript(html)
+        False
+    """
+    import re
+
+    if not html:
+        return False
+
+    # Check for <script> tags with external JS (src attribute)
+    # Pattern matches: <script ... src="..." ...> (possibly with other attributes)
+    if re.search(r'<script[^>]*\bsrc\s*=', html, re.IGNORECASE):
+        return True
+
+    # Check for <script> tags with inline JavaScript content
+    # Pattern matches: <script ...> content </script>
+    # Excludes type="application/json" or type="application/ld+json"
+    script_pattern = re.compile(
+        r'<script(?![^>]*\btype\s*=\s*["\']?(?:application/(?:json|ld\+json)|text/json)[^>]*>)'
+        r'[^>]*>[\s\S]*?</script>',
+        re.IGNORECASE
+    )
+
+    for match in script_pattern.finditer(html):
+        content = match.group(0)
+        # Check if it has actual JavaScript content (not just whitespace/comments)
+        # Strip the tag itself and whitespace
+        inner = re.sub(r'<script[^>]*>', '', content, flags=re.IGNORECASE)
+        inner = re.sub(r'</script>', '', inner, flags=re.IGNORECASE).strip()
+        # If there's meaningful content beyond whitespace, it's JS
+        if inner and not re.match(r'^[\s/*]*$', inner):
+            return True
+
+    return False
