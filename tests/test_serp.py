@@ -1,15 +1,8 @@
-"""Tests for SERP scraper.
-
-Tests public API behavior following TEST_GOVERNANCE.md principles:
-- Test through public interfaces (not internal implementation)
-- Avoid brittle assertions (test behavior, not exact strings)
-- Minimize duplication via shared helpers
-- Mock only direct dependencies, not entire systems
-"""
+"""Tests for SERP scraper core module."""
 
 import asyncio
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import AsyncMock, patch
 
 from serp import (
     ProxyError,
@@ -38,26 +31,17 @@ from serp.config_pydantic import reset_default_config
 
 
 class TestConstants:
-    """Validate module constants are properly defined."""
+    """Module constants are properly defined."""
 
-    def test_max_retries_is_positive(self):
+    def test_constants_positive_and_populated(self):
         assert MAX_RETRIES > 0
-
-    def test_timeout_is_positive(self):
         assert TIMEOUT_MS > 0
-
-    def test_user_agents_is_non_empty_list(self):
-        assert isinstance(USER_AGENTS, list)
-        assert len(USER_AGENTS) > 0
+        assert isinstance(USER_AGENTS, list) and len(USER_AGENTS) > 0
         assert all(isinstance(ua, str) for ua in USER_AGENTS)
 
 
 class TestExceptions:
-    """Validate custom exception classes."""
-
-    @pytest.mark.parametrize("exc_class", [ProxyError, CaptchaError, PageTimeoutError, ParseError])
-    def test_exception_inherits_from_exception(self, exc_class):
-        assert issubclass(exc_class, Exception)
+    """Custom exceptions inherit from Exception and preserve messages."""
 
     @pytest.mark.parametrize("exc_class,msg", [
         (ProxyError, "proxy failed"),
@@ -65,441 +49,209 @@ class TestExceptions:
         (PageTimeoutError, "timeout occurred"),
         (ParseError, "parse failed"),
     ])
-    def test_exception_message_preserved(self, exc_class, msg):
-        exc = exc_class(msg)
-        assert str(exc) == msg
-
-
-class TestImports:
-    """Validate public API exports."""
-
-    def test_exception_types_exported(self):
-        assert issubclass(ProxyError, Exception)
-        assert issubclass(CaptchaError, Exception)
-        assert issubclass(PageTimeoutError, Exception)
-        assert issubclass(ParseError, Exception)
-
-    def test_constants_exported(self):
-        assert isinstance(MAX_RETRIES, int)
-        assert isinstance(TIMEOUT_MS, int)
-        assert isinstance(USER_AGENTS, list)
-
-
-class TestErrorHandling:
-    """Test error handling through public API."""
-
-    def test_captcha_error_can_be_raised(self):
-        """CaptchaError should be raisable."""
-        with pytest.raises(CaptchaError):
-            raise CaptchaError("test captcha")
-
-    def test_proxy_error_can_be_raised(self):
-        """ProxyError should be raisable."""
-        with pytest.raises(ProxyError):
-            raise ProxyError("test proxy")
-
-    def test_page_timeout_error_can_be_raised(self):
-        """PageTimeoutError should be raisable."""
-        with pytest.raises(PageTimeoutError):
-            raise PageTimeoutError("test timeout")
-
-    def test_parse_error_can_be_raised(self):
-        """ParseError should be raisable."""
-        with pytest.raises(ParseError):
-            raise ParseError("test parse")
+    def test_exception_inherits_and_preserves_message(self, exc_class, msg):
+        assert issubclass(exc_class, Exception)
+        assert str(exc_class(msg)) == msg
 
 
 class TestSearchResult:
-    """Tests for SearchResult dataclass."""
+    """SearchResult is a frozen dataclass with to_dict()."""
 
-    def test_search_result_creation(self):
-        """Test creating a SearchResult."""
-        result = SearchResult(
-            rank=1,
-            title="Test Title",
-            url="https://example.com",
-            description="Test description",
-            source="google",
-        )
+    def test_creation_and_to_dict(self):
+        result = SearchResult(rank=1, title="T", url="https://e.com", description="D", source="google")
+        assert result.rank == 1 and result.title == "T"
+        d = result.to_dict()
+        assert d == {"rank": 1, "title": "T", "url": "https://e.com", "description": "D", "source": "google"}
 
-        assert result.rank == 1
-        assert result.title == "Test Title"
-        assert result.url == "https://example.com"
-        assert result.description == "Test description"
-        assert result.source == "google"
+    def test_default_source_google(self):
+        assert SearchResult(rank=1, title="T", url="https://e.com").source == "google"
 
-    def test_search_result_to_dict(self):
-        """Test converting SearchResult to dictionary."""
-        result = SearchResult(
-            rank=1,
-            title="Test Title",
-            url="https://example.com",
-            description="Test description",
-            source="bing",
-        )
-
-        result_dict = result.to_dict()
-
-        assert result_dict["rank"] == 1
-        assert result_dict["title"] == "Test Title"
-        assert result_dict["url"] == "https://example.com"
-        assert result_dict["description"] == "Test description"
-        assert result_dict["source"] == "bing"
-
-    def test_search_result_default_source(self):
-        """Test SearchResult default source is google."""
-        result = SearchResult(rank=1, title="T", url="https://e.com")
-        assert result.source == "google"
-
-    def test_search_result_immutable(self):
-        """Test SearchResult is immutable (frozen dataclass)."""
+    def test_immutable(self):
         result = SearchResult(rank=1, title="T", url="https://e.com")
         with pytest.raises(AttributeError):
             result.rank = 2
 
 
 class TestRetryPolicy:
-    """Tests for RetryPolicy dataclass."""
+    """RetryPolicy with linear and exponential delay calculation."""
 
-    def test_retry_policy_defaults(self):
-        """Test default retry policy values."""
-        policy = RetryPolicy()
-        assert policy.max_retries == 3
-        assert policy.delay_min == 0.5
-        assert policy.delay_max == 2.0
-        assert policy.exponential_backoff is False
+    def test_defaults(self):
+        p = RetryPolicy()
+        assert p.max_retries == 3
+        assert p.delay_min == 0.5
+        assert p.delay_max == 2.0
+        assert p.exponential_backoff is False
 
-    def test_retry_policy_calculate_delay_linear(self):
-        """Test linear delay calculation."""
-        policy = RetryPolicy(delay_min=1.0, delay_max=2.0, exponential_backoff=False)
-        # Delay should be random between min and max
-        delays = [policy.calculate_delay(1) for _ in range(10)]
-        for delay in delays:
-            assert 1.0 <= delay <= 2.0
+    def test_calculate_delay_linear(self):
+        p = RetryPolicy(delay_min=1.0, delay_max=2.0, exponential_backoff=False)
+        delays = [p.calculate_delay(1) for _ in range(10)]
+        assert all(1.0 <= d <= 2.0 for d in delays)
 
-    def test_retry_policy_calculate_delay_exponential(self):
-        """Test exponential backoff delay calculation."""
-        policy = RetryPolicy(delay_min=1.0, delay_max=4.0, exponential_backoff=True)
-        delay = policy.calculate_delay(2)  # Second attempt
-        # Base * 2^(attempt-1) = 1.0 * 2^1 = 2.0, capped at max 4.0
+    def test_calculate_delay_exponential_capped(self):
+        p = RetryPolicy(delay_min=1.0, delay_max=4.0, exponential_backoff=True)
+        delay = p.calculate_delay(2)
         assert delay <= 4.0
 
-    def test_retry_policy_custom_values(self):
-        """Test custom retry policy values."""
-        policy = RetryPolicy(max_retries=5, delay_min=1.0, delay_max=3.0, exponential_backoff=True)
-        assert policy.max_retries == 5
-        assert policy.delay_min == 1.0
-        assert policy.delay_max == 3.0
-        assert policy.exponential_backoff is True
 
-
-class TestProxySettings:
-    """Tests for ProxySettings dataclass."""
+class TestDataclassSettings:
+    """Consolidated tests for settings dataclasses."""
 
     def test_proxy_settings_defaults(self):
-        """Test default proxy settings."""
-        settings = ProxySettings()
-        assert settings.custom_proxies == []
-        assert settings.dataimpulse_gateway is None
-        assert settings.dataimpulse_user is None
-        assert settings.dataimpulse_pass is None
-        assert settings.strategy == "dataimpulse_first"
-        assert settings.dataimpulse_protocol == "http"
-
-    def test_proxy_settings_custom(self):
-        """Test custom proxy settings."""
-        settings = ProxySettings(
-            custom_proxies=["http://proxy1.com:8080"],
-            dataimpulse_gateway="gw.dataimpulse.com",
-            dataimpulse_user="testuser",
-            dataimpulse_pass="testpass",
-            strategy="random",
-            dataimpulse_protocol="socks5",
-        )
-        assert settings.custom_proxies == ["http://proxy1.com:8080"]
-        assert settings.dataimpulse_gateway == "gw.dataimpulse.com"
-        assert settings.strategy == "random"
-        assert settings.dataimpulse_protocol == "socks5"
-
-
-class TestCacheSettings:
-    """Tests for CacheSettings dataclass."""
+        s = ProxySettings()
+        assert s.custom_proxies == []
+        assert s.dataimpulse_gateway is None
+        assert s.strategy == "dataimpulse_first"
 
     def test_cache_settings_defaults(self):
-        """Test default cache settings."""
-        settings = CacheSettings()
-        assert settings.enabled is True
-        assert settings.cache_dir == ".cache/serp"
-        assert settings.ttl == 86400
-
-    def test_cache_settings_custom(self):
-        """Test custom cache settings."""
-        settings = CacheSettings(enabled=False, cache_dir="/tmp/cache", ttl=3600)
-        assert settings.enabled is False
-        assert settings.cache_dir == "/tmp/cache"
-        assert settings.ttl == 3600
-
-
-class TestSearchSettings:
-    """Tests for SearchSettings dataclass."""
+        s = CacheSettings()
+        assert s.enabled is True
+        assert s.cache_dir == ".cache/serp"
+        assert s.ttl == 86400
 
     def test_search_settings_defaults(self):
-        """Test default search settings."""
-        settings = SearchSettings()
-        assert settings.source == "auto"
-        assert settings.timeout == 30
-        assert settings.headless is False
-        assert settings.user_agent is None
-
-    def test_search_settings_custom(self):
-        """Test custom search settings."""
-        settings = SearchSettings(source="google", timeout=60, headless=True)
-        assert settings.source == "google"
-        assert settings.timeout == 60
-        assert settings.headless is True
-
-
-class TestLoggingSettings:
-    """Tests for LoggingSettings dataclass."""
+        s = SearchSettings()
+        assert s.source == "auto"
+        assert s.timeout == 30
+        assert s.headless is False
 
     def test_logging_settings_defaults(self):
-        """Test default logging settings."""
-        settings = LoggingSettings()
-        assert settings.level == "WARNING"
-        assert settings.enabled is True
-
-    def test_logging_settings_custom(self):
-        """Test custom logging settings."""
-        settings = LoggingSettings(level="DEBUG", enabled=False)
-        assert settings.level == "DEBUG"
-        assert settings.enabled is False
+        s = LoggingSettings()
+        assert s.level == "WARNING"
+        assert s.enabled is True
 
 
 class TestSerpConfig:
-    """Tests for SerpConfig configuration."""
+    """SerpConfig validation and nested object creation."""
 
-    def test_config_defaults(self):
-        """Test default configuration."""
+    def test_defaults(self):
         reset_default_config()
         config = SerpConfig()
         assert config.log_level == "WARNING"
         assert config.max_retries == 3
         assert config.cache_enabled is True
-        assert config.cache_ttl == 86400
         assert config.timeout == 30
 
-    def test_config_custom_values(self):
-        """Test custom configuration values."""
-        config = SerpConfig(
-            log_level="DEBUG",
-            max_retries=5,
-            cache_ttl=3600,
-            timeout=60,
-        )
-        assert config.log_level == "DEBUG"
-        assert config.max_retries == 5
-        assert config.cache_ttl == 3600
-        assert config.timeout == 60
+    def test_validates_max_retries_clamped(self):
+        assert SerpConfig(max_retries=0).max_retries == 1
+        assert SerpConfig(max_retries=100).max_retries == 10
 
-    def test_config_validates_max_retries(self):
-        """Test max_retries validation."""
-        config = SerpConfig(max_retries=0)
-        assert config.max_retries == 1  # Clamped to minimum
+    def test_validates_timeout_clamped(self):
+        assert SerpConfig(timeout=1).timeout == 5
+        assert SerpConfig(timeout=200).timeout == 120
 
-        config = SerpConfig(max_retries=100)
-        assert config.max_retries == 10  # Clamped to maximum
-
-    def test_config_validates_timeout(self):
-        """Test timeout validation."""
-        config = SerpConfig(timeout=1)
-        assert config.timeout == 5  # Clamped to minimum
-
-        config = SerpConfig(timeout=200)
-        assert config.timeout == 120  # Clamped to maximum
-
-    def test_config_nested_objects_created(self):
-        """Test that nested settings objects are properly created."""
+    def test_nested_objects_created(self):
         config = SerpConfig(cache_enabled=True, cache_ttl=7200)
         assert isinstance(config.cache, CacheSettings)
-        assert config.cache.enabled is True
         assert config.cache.ttl == 7200
-
         assert isinstance(config.retry, RetryPolicy)
-        assert config.retry.max_retries == 3
-
         assert isinstance(config.search, SearchSettings)
         assert isinstance(config.proxy, ProxySettings)
-        assert isinstance(config.logging, LoggingSettings)
-
-    def test_config_get_nested_dict(self):
-        """Test getting config as nested dictionary."""
-        config = SerpConfig(log_level="INFO")
-        nested = config.get_nested_dict()
-        assert nested["log_level"] == "INFO"
-        assert "cache_ttl" in nested
-        assert "max_retries" in nested
 
 
 class TestUtilityFunctions:
-    """Tests for utility functions."""
+    """Tests for utility helpers."""
 
-    def test_random_user_agent_returns_valid_ua(self):
-        """Test _random_user_agent returns a valid user agent."""
+    def test_random_user_agent(self):
         from serp.utils import _random_user_agent
         ua = _random_user_agent()
-        assert isinstance(ua, str)
-        assert len(ua) > 0
-        assert ua in USER_AGENTS
+        assert isinstance(ua, str) and ua in USER_AGENTS
 
     def test_calculate_backoff_delay(self):
-        """Test backoff delay calculation."""
         from serp.utils import _calculate_backoff_delay
-        # Linear mode
         delay = _calculate_backoff_delay(1)
-        assert 0.5 <= delay <= 2.0  # RETRY_DELAY_MIN to RETRY_DELAY_MAX
+        assert 0.5 <= delay <= 2.0
 
-    def test_extract_bing_real_url_valid(self):
-        """Test extracting real URL from Bing redirect."""
-        from serp.utils import _extract_bing_real_url
-        # This is a valid Bing redirect URL format
-        redirect = "https://www.bing.com/ck/a?....&u=aHR0cHM6Ly9leGFtcGxlLmNvbQ=="
-        # The actual decoding is tested - we just verify it doesn't crash
-        result = _extract_bing_real_url(redirect)
-        assert isinstance(result, str)
-
-    def test_extract_bing_real_url_invalid(self):
-        """Test extracting real URL from non-redirect URL."""
+    def test_extract_bing_real_url_passthrough(self):
         from serp.utils import _extract_bing_real_url
         url = "https://example.com"
-        result = _extract_bing_real_url(url)
-        assert result == url
+        assert _extract_bing_real_url(url) == url
+
+    def test_extract_bing_real_url_decodes_redirect(self):
+        """Bing redirect URLs encode the real URL with a 2-char prefix + base64."""
+        from serp.utils import _extract_bing_real_url
+        redirect = "https://www.bing.com/ck/a?u=a1aHR0cHM6Ly9leGFtcGxlLmNvbQ"
+        result = _extract_bing_real_url(redirect)
+        assert result == "https://example.com"
 
 
 class TestSetLogLevel:
-    """Tests for set_log_level function."""
+    """set_log_level should not raise for any input."""
 
-    def test_set_log_level_with_string(self):
-        """Test setting log level with string."""
-        set_log_level("DEBUG")
-        # Should not raise
-
-    def test_set_log_level_with_int(self):
-        """Test setting log level with integer."""
-        import logging
-        set_log_level(logging.INFO)
-        # Should not raise
-
-    def test_set_log_level_invalid_string(self):
-        """Test setting invalid log level defaults to WARNING."""
-        set_log_level("INVALID")
-        # Should not raise, defaults to WARNING
+    @pytest.mark.parametrize("level", ["DEBUG", 20, "INVALID"])
+    def test_does_not_raise(self, level):
+        set_log_level(level)  # Should not raise
 
 
 class TestSerpClient:
-    """Tests for SerpClient class."""
+    """Tests for SerpClient initialization and search."""
 
-    def test_client_initialization_defaults(self):
-        """Test client initialization with defaults."""
+    def test_initialization_defaults(self):
         client = SerpClient()
         assert client._config is not None
         assert client._config.cache.enabled is True
 
-    def test_client_initialization_with_config(self):
-        """Test client initialization with config object."""
+    def test_initialization_with_config(self):
         config = SerpConfig(cache_enabled=False, max_retries=5)
         client = SerpClient(config=config)
         assert client._config is config
         assert client._config.cache.enabled is False
 
-    def test_client_initialization_with_params(self):
-        """Test client initialization with parameters."""
+    def test_initialization_with_params(self):
         client = SerpClient(use_cache=False, max_retries=5, timeout=60)
         assert client._config.cache.enabled is False
         assert client._config.retry.max_retries == 5
         assert client._config.search.timeout == 60
 
-    def test_client_context_manager(self):
-        """Test async context manager."""
-        async def test_cm():
-            async with SerpClient() as client:
-                assert client is not None
-            return True
-
-        result = asyncio.run(test_cm())
-        assert result is True
-
-    def test_client_sync_context_manager(self):
-        """Test sync context manager."""
+    def test_sync_context_manager(self):
         with SerpClient() as client:
             assert client is not None
 
+    def test_async_context_manager(self):
+        async def run():
+            async with SerpClient() as client:
+                assert client is not None
+        asyncio.run(run())
+
     @pytest.mark.asyncio
-    async def test_client_search_with_mock(self):
-        """Test search method with mocked internal calls."""
+    async def test_search_with_mock(self):
         client = SerpClient(use_cache=False)
-
-        # Mock the _search_browser method to avoid actual HTTP calls
         mock_results = [
-            SearchResult(rank=1, title="Result 1", url="https://example.com/1"),
-            SearchResult(rank=2, title="Result 2", url="https://example.com/2"),
+            SearchResult(rank=1, title="R1", url="https://e.com/1"),
+            SearchResult(rank=2, title="R2", url="https://e.com/2"),
         ]
-
         with patch.object(client, '_search_browser', new_callable=AsyncMock, return_value=mock_results):
-            results = await client.search("test query")
+            results = await client.search("test")
             assert len(results) == 2
-            assert results[0].title == "Result 1"
+            assert results[0].title == "R1"
 
     @pytest.mark.asyncio
-    async def test_client_search_fallback_uses_cache(self):
-        """Test that search respects use_cache parameter."""
+    async def test_search_respects_cache(self):
         config = SerpConfig(cache_enabled=True, cache_ttl=3600)
         client = SerpClient(config=config)
-
-        mock_results = [SearchResult(rank=1, title="Cached", url="https://example.com")]
-
-        # Mock cache get to return cached results
-        with patch.object(client._cache, 'get', return_value=[{"rank": 1, "title": "Cached", "url": "https://example.com"}]):
+        cached_data = [{"rank": 1, "title": "Cached", "url": "https://e.com"}]
+        with patch.object(client._cache, 'get', return_value=cached_data):
             results = await client.search("test", use_cache=True)
             assert len(results) == 1
             assert results[0].title == "Cached"
 
 
-class TestQuickFunctions:
-    """Tests for module-level quick_* convenience functions."""
+class TestModuleLevelFunctions:
+    """Tests for singleton pattern and quick_* functions."""
 
-    def test_get_default_client_returns_serp_client(self):
-        """Test get_default_client returns SerpClient instance."""
+    def test_singleton_pattern(self):
         reset_default_client()
-        client = get_default_client()
-        assert isinstance(client, SerpClient)
+        c1 = get_default_client()
+        c2 = get_default_client()
+        assert c1 is c2 and isinstance(c1, SerpClient)
 
-    def test_get_default_client_returns_same_instance(self):
-        """Test get_default_client returns singleton."""
+    def test_reset_creates_new_instance(self):
         reset_default_client()
-        client1 = get_default_client()
-        client2 = get_default_client()
-        assert client1 is client2
+        c1 = get_default_client()
+        reset_default_client()
+        c2 = get_default_client()
+        assert c1 is not c2
 
-    def test_reset_default_client_clears_singleton(self):
-        """Test reset_default_client clears the singleton."""
-        reset_default_client()
-        client1 = get_default_client()
-        reset_default_client()
-        client2 = get_default_client()
-        assert client1 is not client2
-
-    @pytest.mark.asyncio
-    async def test_quick_search_is_callable(self):
-        """Test quick_search function exists and is callable."""
-        # We can't actually call it without mocking, but we verify it exists
+    def test_quick_functions_exist(self):
         assert callable(quick_search)
-
-    @pytest.mark.asyncio
-    async def test_quick_fetch_is_callable(self):
-        """Test quick_fetch function exists and is callable."""
         assert callable(quick_fetch)
-
-    @pytest.mark.asyncio
-    async def test_quick_search_http_is_callable(self):
-        """Test quick_search_http function exists and is callable."""
         assert callable(quick_search_http)

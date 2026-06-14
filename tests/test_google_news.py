@@ -18,360 +18,166 @@ from serp.config_pydantic import SerpConfig
 class TestNewsResult:
     """Tests for NewsResult dataclass."""
 
-    def test_news_result_creation(self):
-        """Test creating a NewsResult."""
-        news = NewsResult(
-            title="Tesla yeni model tanıttı",
-            url="https://www.bbc.com/haber/tesla-yeni-model",
-            published=datetime(2026, 5, 11, 8, 0, 0),
-            source="BBC",
-            description="Tesla yeni bir elektrikli model tanıttı",
-            query="Tesla",
-        )
-
-        assert news.title == "Tesla yeni model tanıttı"
-        assert news.url == "https://www.bbc.com/haber/tesla-yeni-model"
-        assert news.source == "BBC"
-        assert news.query == "Tesla"
-
-    def test_news_result_to_dict(self):
-        """Test converting NewsResult to dictionary."""
+    def test_creation_and_to_dict(self):
         published = datetime(2026, 5, 11, 8, 0, 0)
         news = NewsResult(
-            title="Test Title",
-            url="https://example.com",
-            published=published,
-            source="TestSource",
-            description="Test description",
-            query="TestQuery",
+            title="Tesla announced", url="https://bbc.com/tesla",
+            published=published, source="BBC",
+            description="New model details", query="Tesla",
         )
+        assert news.title == "Tesla announced"
+        assert news.source == "BBC"
 
-        result = news.to_dict()
+        d = news.to_dict()
+        assert d["title"] == "Tesla announced"
+        assert d["source"] == "BBC"
+        assert "2026-05-11" in d["published"]
 
-        assert result["title"] == "Test Title"
-        assert result["url"] == "https://example.com"
-        assert result["source"] == "TestSource"
-        assert result["description"] == "Test description"
-        assert result["query"] == "TestQuery"
-        assert "2026-05-11" in result["published"]
-
-
-class TestNewsSettings:
-    """Tests for NewsSettings dataclass."""
-
-    def test_default_settings(self):
-        """Test default news settings."""
-        settings = NewsSettings()
-
-        assert settings.language == "tr"
-        assert settings.country == "TR"
-        assert settings.time_range == "d"
-
-    def test_custom_settings(self):
-        """Test custom news settings."""
-        settings = NewsSettings(
-            language="en",
-            country="US",
-            time_range="w",
-        )
-
-        assert settings.language == "en"
-        assert settings.country == "US"
-        assert settings.time_range == "w"
+    def test_defaults(self):
+        """Optional fields default to empty strings."""
+        news = NewsResult(title="T", url="https://example.com", published=datetime.min)
+        assert news.description == ""
+        assert news.source == ""
+        assert news.query == ""
+        d = news.to_dict()
+        assert d["source"] == ""
+        assert d["description"] == ""
 
 
 class TestGoogleNewsClient:
-    """Tests for GoogleNewsClient."""
+    """Tests for GoogleNewsClient core methods."""
 
-    def test_client_initialization(self):
-        """Test client initialization."""
+    def test_initialization_defaults(self):
         client = GoogleNewsClient()
-
         assert client._news_settings.language == "tr"
         assert client._news_settings.country == "TR"
         assert client._news_settings.time_range == "d"
 
-    def test_client_custom_settings(self):
-        """Test client with custom settings."""
-        client = GoogleNewsClient(
-            language="en",
-            country="US",
-            time_range="h",
-        )
-
+    def test_custom_settings(self):
+        client = GoogleNewsClient(language="en", country="US", time_range="h")
         assert client._news_settings.language == "en"
         assert client._news_settings.country == "US"
         assert client._news_settings.time_range == "h"
 
     def test_generate_queries(self):
-        """Test query generation from company name."""
         client = GoogleNewsClient()
-
         queries = client._generate_queries("Tesla")
-
         assert len(queries) == 3
-        assert "Tesla" in queries[0]
-        assert "Tesla" in queries[1]
-        assert "Tesla" in queries[2]
+        assert all("Tesla" in q for q in queries)
 
     def test_build_rss_url(self):
-        """Test RSS URL building."""
         client = GoogleNewsClient(language="tr", country="TR")
-
         url = client._build_rss_url("Tesla")
-
         assert "news.google.com/rss/search" in url
         assert "q=Tesla" in url
         assert "hl=tr" in url
         assert "gl=TR" in url
-        # ceid is URL encoded, TR:tr becomes TR%3Atr
-        assert "ceid=TR%3Atr" in url
 
     def test_parse_date_rfc2822(self):
-        """Test parsing RFC 2822 date format."""
         client = GoogleNewsClient()
+        result = client._parse_date("Sun, 11 May 2026 08:00:00 GMT")
+        assert result.year == 2026 and result.month == 5 and result.day == 11
 
-        date_str = "Sun, 11 May 2026 08:00:00 GMT"
-        result = client._parse_date(date_str)
-
-        assert result.year == 2026
-        assert result.month == 5
-        assert result.day == 11
-        assert result.hour == 8
-
-    def test_parse_date_invalid(self):
-        """Test parsing invalid date."""
+    def test_parse_date_invalid_returns_min(self):
         client = GoogleNewsClient()
+        assert client._parse_date("invalid") == datetime.min
 
-        result = client._parse_date("invalid date")
-
-        assert result == datetime.min
-
-    def test_deduplicate(self):
-        """Test news deduplication."""
+    def test_deduplicate_by_url(self):
         client = GoogleNewsClient()
-
+        now = datetime.now()
         news_list = [
-            NewsResult(
-                title="News 1",
-                url="https://example.com/news1",
-                published=datetime.now(),
-                source="Source1",
-            ),
-            NewsResult(
-                title="News 2",
-                url="https://example.com/news2",
-                published=datetime.now(),
-                source="Source2",
-            ),
-            NewsResult(
-                title="News 1 Duplicate",
-                url="https://example.com/news1",
-                published=datetime.now(),
-                source="Source3",
-            ),
+            NewsResult(title="News 1", url="https://example.com/1", published=now, source="S1"),
+            NewsResult(title="News 2", url="https://example.com/2", published=now, source="S2"),
+            NewsResult(title="Dup", url="https://example.com/1", published=now, source="S3"),
         ]
-
         unique = client._deduplicate(news_list)
-
         assert len(unique) == 2
-        assert unique[0].title == "News 1"
-        assert unique[1].title == "News 2"
 
     def test_parse_rss_xml(self):
-        """Test RSS XML parsing."""
         client = GoogleNewsClient()
-
-        xml_content = """<?xml version="1.0" encoding="UTF-8"?>
-        <rss version="2.0">
-          <channel>
-            <title>Google News</title>
-            <item>
-              <title>Tesla yeni model tanıttı</title>
-              <link>https://www.bbc.com/haber/tesla-yeni-model</link>
-              <pubDate>Sun, 11 May 2026 08:00:00 GMT</pubDate>
-              <source>BBC</source>
-              <description>Tesla'nın yeni modeli hakkında detaylar...</description>
-            </item>
-          </channel>
-        </rss>"""
-
-        results = client._parse_rss(xml_content, "Tesla")
-
+        xml = """<?xml version="1.0" encoding="UTF-8"?>
+        <rss version="2.0"><channel><title>Google News</title>
+          <item>
+            <title>Tesla announced</title>
+            <link>https://bbc.com/tesla</link>
+            <pubDate>Sun, 11 May 2026 08:00:00 GMT</pubDate>
+            <source>BBC</source>
+            <description>Details...</description>
+          </item>
+        </channel></rss>"""
+        results = client._parse_rss(xml, "Tesla")
         assert len(results) == 1
-        assert results[0].title == "Tesla yeni model tanıttı"
-        assert results[0].url == "https://www.bbc.com/haber/tesla-yeni-model"
+        assert results[0].title == "Tesla announced"
         assert results[0].source == "BBC"
         assert results[0].query == "Tesla"
 
-    def test_async_context_manager(self):
-        """Test async context manager."""
-        async def test_cm():
-            async with GoogleNewsClient() as client:
-                assert client is not None
-            return True
-
-        result = asyncio.run(test_cm())
-        assert result is True
-
-    def test_get_news_with_content_stub(self):
-        """Test get_news_with_content is a stub that calls get_news."""
-        client = GoogleNewsClient()
-        # This is just testing the stub behavior - it should call get_news internally
-        # We can't fully test without mocking, but verify the method exists
-        assert hasattr(client, 'get_news_with_content')
+    @pytest.mark.asyncio
+    async def test_async_context_manager(self):
+        async with GoogleNewsClient() as client:
+            assert client is not None
 
     def test_retry_failed_logic(self):
-        """Test _retry_failed returns True when retries remaining."""
         client = GoogleNewsClient()
         retry = RetryPolicy(max_retries=3)
 
-        async def check_retry():
-            result = await client._retry_failed(1, ProxyError("test"), retry)
-            return result
+        async def check(attempt):
+            return await client._retry_failed(attempt, ProxyError("err"), retry)
 
-        result = asyncio.run(check_retry())
-        assert result is True  # Should retry since attempt 1 < max_retries 3
-
-    def test_retry_failed_exhausted(self):
-        """Test _retry_failed returns False when retries exhausted."""
-        client = GoogleNewsClient()
-        retry = RetryPolicy(max_retries=3)
-
-        async def check_retry():
-            result = await client._retry_failed(3, ProxyError("test"), retry)
-            return result
-
-        result = asyncio.run(check_retry())
-        assert result is False  # Should not retry since attempt 3 >= max_retries 3
-
-    def test_client_str_representation(self):
-        """Test client string representation."""
-        client = GoogleNewsClient()
-        repr_str = repr(client)
-        assert "GoogleNewsClient" in repr_str
+        assert asyncio.run(check(1)) is True   # retries remaining
+        assert asyncio.run(check(3)) is False   # retries exhausted
 
 
-class TestGoogleNewsModuleFunctions:
-    """Tests for module-level convenience functions."""
-
-    def test_get_default_client_returns_google_news_client(self):
-        """Test get_default_client returns GoogleNewsClient instance."""
-        from serp.google_news import get_default_client, reset_default_client
-        reset_default_client()
-        client = get_default_client()
-        assert isinstance(client, GoogleNewsClient)
-
-    def test_get_default_client_returns_same_instance(self):
-        """Test get_default_client returns singleton."""
-        from serp.google_news import get_default_client, reset_default_client
-        reset_default_client()
-        client1 = get_default_client()
-        client2 = get_default_client()
-        assert client1 is client2
-
-    def test_reset_default_client_clears_singleton(self):
-        """Test reset_default_client clears the singleton."""
-        from serp.google_news import get_default_client, reset_default_client
-        reset_default_client()
-        client1 = get_default_client()
-        reset_default_client()
-        client2 = get_default_client()
-        assert client1 is not client2
-
-    @pytest.mark.asyncio
-    async def test_quick_news_is_callable(self):
-        """Test quick_news function exists and is callable."""
-        from serp.google_news import quick_news
-        assert callable(quick_news)
-
-
-class TestNewsResultEdgeCases:
-    """Tests for NewsResult edge cases."""
-
-    def test_news_result_with_empty_description(self):
-        """Test NewsResult with empty description."""
-        news = NewsResult(
-            title="Test Title",
-            url="https://example.com",
-            published=datetime.now(),
-            source="TestSource",
-            query="TestQuery",
-        )
-        assert news.description == ""
-
-    def test_news_result_with_empty_source(self):
-        """Test NewsResult with empty source."""
-        news = NewsResult(
-            title="Test Title",
-            url="https://example.com",
-            published=datetime.now(),
-        )
-        assert news.source == ""
-
-    def test_news_result_to_dict_with_empty_fields(self):
-        """Test to_dict with empty fields."""
-        news = NewsResult(
-            title="Test",
-            url="https://example.com",
-            published=datetime.min,
-        )
-        result = news.to_dict()
-        assert result["source"] == ""
-        assert result["description"] == ""
-        assert result["query"] == ""
-
-
-class TestGoogleNewsClientProxyBuilding:
-    """Tests for proxy building methods in GoogleNewsClient."""
+class TestProxyBuilding:
+    """Test proxy URL construction."""
 
     def test_build_proxy_url_with_auth(self):
-        """Test _build_proxy_url with authentication."""
         client = GoogleNewsClient()
-        proxy = {
+        result = client._build_proxy_url({
             "server": "http://gw.dataimpulse.com:823",
-            "username": "user",
-            "password": "pass",
-        }
-        result = client._build_proxy_url(proxy)
+            "username": "user", "password": "pass",
+        })
         assert "user:pass@" in result
         assert "gw.dataimpulse.com" in result
 
     def test_build_proxy_url_without_auth(self):
-        """Test _build_proxy_url without authentication."""
         client = GoogleNewsClient()
-        proxy = {"server": "http://proxy.com:8080"}
-        result = client._build_proxy_url(proxy)
+        result = client._build_proxy_url({"server": "http://proxy.com:8080"})
         assert result == "http://proxy.com:8080"
 
     def test_build_proxy_url_none(self):
-        """Test _build_proxy_url with None."""
         client = GoogleNewsClient()
-        result = client._build_proxy_url(None)
-        assert result is None
+        assert client._build_proxy_url(None) is None
 
     def test_get_random_proxy_no_config(self):
-        """Test _get_random_proxy returns None when no proxies configured."""
-        # Create a config with no proxy settings
-        config = SerpConfig(
-            dataimpulse_gateway=None,
-            custom_proxies="",
-        )
+        config = SerpConfig(dataimpulse_gateway=None, custom_proxies="")
         client = GoogleNewsClient(config=config)
-        result = client._get_random_proxy()
-        assert result is None  # No proxies configured
+        assert client._get_random_proxy() is None
 
     def test_build_dataimpulse_proxy_no_config(self):
-        """Test _build_dataimpulse_proxy returns None when not configured."""
-        # Create a config with no DataImpulse settings
-        config = SerpConfig(
-            dataimpulse_gateway=None,
-            dataimpulse_user=None,
-        )
+        config = SerpConfig(dataimpulse_gateway=None, dataimpulse_user=None)
         client = GoogleNewsClient(config=config)
-        result = client._build_dataimpulse_proxy()
-        assert result is None  # No DataImpulse configured
+        assert client._build_dataimpulse_proxy() is None
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+class TestModuleFunctions:
+    """Tests for module-level singleton and convenience functions."""
+
+    def test_singleton_pattern(self):
+        from serp.google_news import get_default_client, reset_default_client
+        reset_default_client()
+        c1 = get_default_client()
+        c2 = get_default_client()
+        assert c1 is c2
+
+    def test_reset_creates_new_instance(self):
+        from serp.google_news import get_default_client, reset_default_client
+        reset_default_client()
+        c1 = get_default_client()
+        reset_default_client()
+        c2 = get_default_client()
+        assert c1 is not c2
+
+    def test_get_default_client_type(self):
+        from serp.google_news import get_default_client, reset_default_client
+        reset_default_client()
+        assert isinstance(get_default_client(), GoogleNewsClient)

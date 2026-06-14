@@ -54,6 +54,12 @@ from .types import (
 )
 from .config_pydantic import SerpConfig
 
+# Browser stealth / anti-detection
+from .browser_stealth import (
+    FingerprintProfile,
+    DEFAULT_FINGERPRINT,
+)
+
 # Convenience functions (use default client)
 from .client import quick_search, quick_fetch, quick_search_http
 
@@ -117,6 +123,9 @@ __all__ = [
     "CacheSettings",
     "SearchSettings",
     "LoggingSettings",
+    # Browser stealth / anti-detection
+    "FingerprintProfile",
+    "DEFAULT_FINGERPRINT",
     # Convenience functions (use default client, recommended for simple use)
     "quick_search",
     "quick_fetch",

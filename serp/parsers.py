@@ -1,11 +1,20 @@
 """SERP parsing logic for Google and Bing using nodriver."""
 
 import asyncio
+import shutil
+import tempfile
 from typing import Any, Optional
 
 import markdownify
 import nodriver as uc
 
+from .browser_stealth import (
+    DEFAULT_FINGERPRINT,
+    FingerprintProfile,
+    apply_stealth,
+    build_chrome_flags,
+    inject_webrtc_prefs,
+)
 from .cleaning import clean_html, clean_markdown
 from .config import BING_URL_TEMPLATE
 from .utils import (
@@ -97,36 +106,41 @@ def _find_system_chrome_path() -> Optional[str]:
 async def _create_browser(
     proxy: Optional[dict] = None,
     headless: bool = False,
+    fingerprint: Optional[FingerprintProfile] = None,
 ) -> Optional[uc.Browser]:
-    """Create and return a nodriver browser instance.
+    """Create and return a nodriver browser instance with full stealth applied.
 
-    Uses nodriver.start() as recommended in the documentation.
-    Sandbox is disabled for Linux/root environments.
+    Applies the full anti-detection stack from ``browser_stealth``:
 
-    Proxy credentials are NOT embedded in --proxy-server because Chrome
-    does not support user:pass@host format. Authentication is handled
-    separately via CDP Fetch.authRequired event in _setup_proxy_auth().
+    1. ``FingerprintProfile`` (or default) used for consistent spoofing signals.
+    2. Anti-detect Chrome flags from §3.
+    3. WebRTC preferences injected into the user-data dir *before* startup (Layer 1 of 3).
+    4. CDP fingerprint overrides + three JS stealth scripts injected *after* startup.
 
-    When headless=False (the default), a virtual display (DISPLAY env var)
-    is required. Running non-headless without a display will raise
-    VirtualScreenRequiredError.
+    Proxy credentials are **not** embedded in ``--proxy-server`` (Chrome does
+    not support it).  Authentication is handled via ``CDP Fetch.authRequired``
+    in ``_setup_proxy_auth()``.
+
+    Args:
+        proxy: Proxy dict with ``server``, ``username``, ``password`` keys.
+        headless: Run Chrome in headless mode (default: ``False``).
+        fingerprint: Optional ``FingerprintProfile``; if ``None`` the global
+            ``DEFAULT_FINGERPRINT`` is used.
+
+    Returns:
+        A ``nodriver.Browser`` instance, or ``None`` if startup fails.
     """
+    fp = fingerprint or DEFAULT_FINGERPRINT
+
     # Non-headless mode requires a virtual display
     if not headless:
         require_virtual_display()
 
-    browser_args = [
-        "--disable-dev-shm-usage",
-        "--disable-extensions",
-        "--disable-infobars",
-        # WebRTC leak prevention (from documentation)
-        "--disable-webrtc",
-        "--disable-features=WebRtcHideLocalIpsWithMdns",
-        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-    ]
+    # Build anti-detect Chrome flags (§3)
+    browser_args = build_chrome_flags(fp)
 
+    # Add proxy flag (§3.5)
     if proxy:
-        # Chrome does NOT support embedded credentials. Pass host:port only.
         proxy_arg = _build_chrome_proxy_arg(proxy)
         if proxy_arg:
             browser_args.append(f"--proxy-server={proxy_arg}")
@@ -135,22 +149,38 @@ async def _create_browser(
     try:
         import os
 
-        # nodriver.start() handles --no-sandbox automatically based on this flag.
-        # sandbox=False is essential for Linux/root environments.
-        sandbox = os.geteuid() != 0  # True = sandbox enabled (non-root), False = disabled (root)
-
-        # Find system Chrome to avoid snap chromium issues
+        sandbox = os.geteuid() != 0  # True = sandbox enabled (non-root)
         browser_executable = _find_system_chrome_path()
+
+        # Create a temporary user-data dir so we can inject WebRTC prefs (§7 Layer 1)
+        # before Chrome reads them on startup.
+        user_data_dir = tempfile.mkdtemp(prefix="serp_chrome_")
+
+        # §7 Layer 1: WebRTC prefs injected BEFORE Chrome starts
+        inject_webrtc_prefs(user_data_dir)
 
         browser = await uc.start(
             headless=headless,
             browser_args=browser_args,
             sandbox=sandbox,
             browser_executable_path=browser_executable,
+            user_data_dir=user_data_dir,
         )
+
+        # Store user_data_dir on the browser for cleanup in _cleanup_browser()
+        browser._serp_user_data_dir = user_data_dir
+
+        # §5 + §4 + §6 + §7 Layer 3: CDP fingerprint + JS stealth injection
+        await apply_stealth(browser, fp)
+
         return browser
     except Exception as e:
         logger.error(f"Failed to start browser: {e}")
+        # Clean up the temporary user-data dir if it was created
+        try:
+            shutil.rmtree(user_data_dir, ignore_errors=True)
+        except Exception:
+            pass
         return None
 
 
@@ -578,6 +608,15 @@ async def _cleanup_browser(browser) -> None:
 
     await asyncio.sleep(0.25)
     browser.stop()
+
+    # Clean up temporary user-data directory (created in _create_browser)
+    user_data_dir = getattr(browser, '_serp_user_data_dir', None)
+    if user_data_dir:
+        try:
+            shutil.rmtree(user_data_dir, ignore_errors=True)
+            logger.debug(f"Cleaned up temp user-data dir: {user_data_dir}")
+        except Exception as exc:
+            logger.warning(f"Failed to clean up temp dir {user_data_dir}: {exc}")
 
 
 async def _fetch_browser_impl(
