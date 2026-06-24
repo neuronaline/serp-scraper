@@ -48,3 +48,4 @@ publish.sh
 .ruff_cache/
 diff.sh
 .forge/
+data/
