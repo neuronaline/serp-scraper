@@ -14,7 +14,7 @@ Web page fetching uses a two-tier fallback strategy:
    - Converts cleaned HTML to Markdown via markdownify
    - Advantages: Low resource usage, fast execution, no browser overhead
 
-2. FALLBACK: Browser-based (nodriver)
+2. FALLBACK: Browser-based (Camoufox)
    - Invoked when page contains JavaScript (requires execution)
    - Invoked when BS4 fetch fails or returns unusable content
    - Handles JavaScript-rendered pages, CAPTCHA, anti-bot measures
@@ -284,7 +284,7 @@ class SerpClient:
     ) -> list[SearchResult]:
         """Search for query and return results.
 
-        Note: Google and Bing SERP searches ALWAYS use browser (nodriver) because
+        Note: Google and Bing SERP searches ALWAYS use browser (Camoufox) because
         these search engines require JavaScript to render results. The 'method'
         parameter is ignored for SERP searches.
 
@@ -326,7 +326,7 @@ class SerpClient:
         source: Optional[str],
         use_cache: bool,
     ) -> list[SearchResult]:
-        """Browser-based search using nodriver."""
+        """Browser-based search using Camoufox."""
         # Check cache first
         if use_cache and self._cache:
             search_sources = (source,) if source else ("google", "bing")
@@ -629,7 +629,7 @@ class SerpClient:
         Fetch Flow:
             1. Check cache (if enabled)
             2. Try BS4 + HTTP (primary method, unless prefer_browser=True)
-            3. On BS4 failure → fallback to browser (nodriver)
+            3. On BS4 failure → fallback to browser (Camoufox)
             4. Cache successful result
             5. Apply compression if requested
         """
@@ -853,7 +853,7 @@ class SerpClient:
 
         This method implements the BS4-first-then-browser fallback pattern:
         1. Try BS4 + HTTP fetch (httpx + BeautifulSoup + markdownify)
-        2. On any retryable error, immediately fall back to browser (nodriver)
+        2. On any retryable error, immediately fall back to browser (Camoufox)
         3. Cache the successful result
 
         Note: This method exists for backward compatibility. The default fetch()
@@ -1013,7 +1013,7 @@ async def quick_search(
 ) -> list[SearchResult]:
     """Convenience function for search using default client.
 
-    Note: SERP searches (Google/Bing) always use browser (nodriver) because
+    Note: SERP searches (Google/Bing) always use browser (Camoufox) because
     search engines require JavaScript to render results. The 'method' parameter
     is accepted for backward compatibility but is ignored.
 
@@ -1066,7 +1066,7 @@ async def quick_search_http(
     """Convenience function for HTTP-based search.
 
     Uses lightweight HTTP requests (httpx) instead of a full browser.
-    Note: SERP searches via client.search() now always use browser (nodriver)
+    Note: SERP searches via client.search() now always use browser (Camoufox)
     because search engines require JavaScript to render results. This function
     exists for callers who specifically want the older HTTP-based search path.
 

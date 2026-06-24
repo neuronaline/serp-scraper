@@ -9,7 +9,7 @@ A powerful, async Python library for scraping Google and Bing Search Engine Resu
 
 ## Features
 
-- **Dual Search Methods**: Browser-based (`nodriver`) and HTTP-based (`httpx`) scraping
+- **Dual Search Methods**: Browser-based (`Camoufox`) and HTTP-based (`httpx`) scraping
 - **Google News RSS**: Scrape news articles via Google News RSS feeds
 - **Google Scholar**: Search academic papers from Google Scholar
 - **Proxy Rotation**: DataImpulse and custom proxy support with automatic rotation
@@ -50,7 +50,7 @@ pip install serp-scraper[api]  # With REST API (FastAPI)
 ## Requirements
 
 - Python 3.10 or higher
-- Google Chrome browser installed
+- Firefox browser (managed by Camoufox — run `python -m camoufox fetch && python -m camoufox set official`)
 - **Virtual display** (for non-headless mode, the default):
   - Linux/headless servers: Install [Xvfb](https://en.wikipedia.org/wiki/Xvfb) (`sudo apt install xvfb`) and use `DISPLAY=:99` or run with `xvfb-run`
   - macOS: No additional setup needed (has built-in display)
@@ -156,7 +156,7 @@ asyncio.run(main())
 
 **Fetch Strategy:**
 - **Static pages (no JavaScript):** Uses fast HTTP + BeautifulSoup4
-- **JavaScript-detected pages:** Automatically uses browser (nodriver) for execution
+- **JavaScript-detected pages:** Automatically uses browser (Camoufox) for execution
 - **Failed/incomplete fetch:** Falls back to browser
 - **Full page load guarantee:** Browser waits for `load` event + 1s for JS rendering
 
@@ -362,7 +362,7 @@ client = SerpClient(
 
 Search for a query and return results.
 
-**Note:** Google and Bing SERP searches always use browser (nodriver) because these search engines require JavaScript to render results. The `method` parameter is deprecated and ignored.
+**Note:** Google and Bing SERP searches always use browser (Camoufox) because these search engines require JavaScript to render results. The `method` parameter is deprecated and ignored.
 
 **Parameters:**
 - `query` (str): Search query string
@@ -387,7 +387,7 @@ Fetch a URL and return content as Markdown.
 
 **Fetch Strategy:**
 - **Static pages (no JavaScript):** Uses fast HTTP + BeautifulSoup4 - low resource usage, fast execution
-- **JavaScript detected in HTML:** Immediately falls back to browser (nodriver) for execution
+- **JavaScript detected in HTML:** Immediately falls back to browser (Camoufox) for execution
 - **Failed/incomplete fetch:** Falls back to browser (handles CAPTCHA, anti-bot measures)
 - **Full page load guarantee:** Browser waits for `load` event + 1s additional wait for JS rendering
 
@@ -739,7 +739,7 @@ serp-scraper/
 │   ├── google_scholar.py    # Google Scholar client
 │   ├── http_search.py       # HTTP-based search (httpx)
 │   ├── output_formatter.py  # Text and JSON output formatting
-│   ├── parsers.py           # Browser-based parsing (nodriver)
+│   ├── parsers.py           # Browser-based parsing (Camoufox)
 │   ├── types.py             # Type definitions (SearchResult, RetryPolicy, etc.)
 │   └── utils.py             # Exceptions, helpers, constants
 ├── api/                     # REST API (optional)
@@ -821,22 +821,22 @@ pytest tests/test_serp.py
 
 **For Google Scholar, Google News, and URL Fetch:**
 1. **Primary:** BS4 (BeautifulSoup4) + HTTP - fast, lightweight
-2. **Fallback:** Browser (nodriver) - triggered on BS4 failure
+2. **Fallback:** Browser (Camoufox) - triggered on BS4 failure
 
 **For Google and Bing SERP:**
-- Always uses browser (nodriver) because JavaScript is required to render results
+- Always uses browser (Camoufox) because JavaScript is required to render results
 
 ### Search Methods
 
 **SERP Search (Google/Bing):**
-- Always uses `nodriver` for stealth Chrome automation
+- Always uses Camoufox (Firefox/Gecko) for stealth browser automation
 - More reliable, harder to detect
 - Slower due to browser overhead
 
 **URL Fetch / Google News / Google Scholar:**
 - Default: BS4-first, browser fallback on failure
 - BS4 method: Uses `httpx` for direct HTTP requests with BeautifulSoup4 parsing
-- Browser fallback: Uses `nodriver` when BS4 fails (empty content, CAPTCHA, parse errors, timeouts)
+- Browser fallback: Uses Camoufox when BS4 fails (empty content, CAPTCHA, parse errors, timeouts)
 
 ### Caching
 
@@ -878,7 +878,7 @@ The library provides specific exceptions for different failure modes:
 
 | Package | Version | Purpose |
 |---------|---------|---------|
-| nodriver | >=0.50.0 | Stealth Chrome automation |
+| camoufox[geoip] | >=0.4.0 | Stealth Firefox automation (Camoufox) |
 | markdownify | >=0.12.0 | HTML to Markdown conversion |
 | httpx | >=0.25.0 | Async HTTP client |
 | beautifulsoup4 | >=4.12.0 | HTML parsing |

@@ -1,26 +1,131 @@
-"""Browser anti-detection and fingerprinting module.
+"""Browser anti-detection and fingerprinting module for Camoufox (Firefox/Gecko).
 
-Implements stealth techniques from the NoDriver Stealth & Anti-Detection Reference
-to minimize bot detection during SERP scraping:
+Camoufox handles most anti-detection at the C++/BrowserForge level.
+This module provides the JavaScript safety net that fills remaining gaps:
 
-- Chrome flags for automation concealment (§3)
-- JavaScript stealth injection — navigator.webdriver, cdc_*, chrome object, etc. (§4)
-- CDP fingerprint emulation — UserAgent, timezone, locale, viewport, etc. (§5)
-- JavaScript fingerprint spoofing — screen, WebGL, plugins, etc. (§6)
-- WebRTC IP leak prevention — 3-layer defense (§7)
-- Cloudflare Turnstile countermeasures (§8)
+1. JS Stealth — navigator.webdriver cleanup, permission overrides (§4)
+2. JS Font Spoof — FontFaceSet filtering, CSS prototype overrides (§6/§11)
+3. JS WebRTC Spoof — Functional RTCPeerConnection with IP sanitization (§10)
+4. JS Fingerprint — Screen, navigator, WebGL, oscpu overrides (§5)
 
-Each section is numbered to match the corresponding section in the reference document.
+Each section is numbered to match BROWSER_STEALTH_REFERENCE.md.
 """
 
 import json
 import logging
-import re
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+# ──────────────────────────────────────────────────────────────
+# Windows 10 Font List for Camoufox
+# ──────────────────────────────────────────────────────────────
+
+WIN10_FONTS = [
+    "Arial", "Segoe UI", "Consolas", "Times New Roman",
+    "Calibri", "Cambria", "Candara", "Courier New",
+    "Georgia", "Impact", "Lucida Console", "Lucida Sans Unicode",
+    "MS Sans Serif", "MS Serif", "Palatino Linotype",
+    "Tahoma", "Trebuchet MS", "Verdana",
+    "Arial Black", "Arial Narrow", "Book Antiqua",
+    "Bookman Old Style", "Century Gothic", "Century Schoolbook",
+    "Comic Sans MS", "Copperplate Gothic", "Courier",
+    "Ebrima", "Franklin Gothic", "Gabriola",
+    "Gadugi", "Garamond", "Gautami",
+    "Gill Sans MT", "Gloucester MT", "Goudy Old Style",
+    "Haettenschweiler", "HoloLens MDL2 Assets", "Impact",
+    "Imprint MT Shadow", "Informal Roman", "Javanese Text",
+    "Kartika", "Khmer UI", "KodchiangUPC",
+    "Lao UI", "Lucida Bright", "Lucida Calligraphy",
+    "Lucida Fax", "Lucida Handwriting", "Lucida Sans",
+    "Lucida Sans Typewriter", "Magneto", "Maiandra GD",
+    "Malgun Gothic", "Microsoft Himalaya", "Microsoft JhengHei",
+    "Microsoft New Tai Lue", "Microsoft PhagsPa", "Microsoft Sans Serif",
+    "Microsoft Tai Le", "Microsoft Uighur", "Microsoft YaHei",
+    "Microsoft Yi Baiti", "MingLiU", "Modern",
+    "Mongolian Baiti", "Monotype Corsiva", "Myanmar Text",
+    "Narkisim", "Niagara Engraved", "Niagara Solid",
+    "NSimSun", "Nyala", "OCR A Extended",
+    "Old English Text MT", "Onyx", "Palace Script MT",
+    "Papyrus", "Parchment", "Perpetua",
+    "Perpetua Titling MT", "Playbill", "Poor Richard",
+    "Pristina", "Rage Italic", "Ravie",
+    "Rockwell", "Script MT Bold", "Segoe Print",
+    "Segoe Script", "Segoe UI Historic", "Segoe UI Symbol",
+    "Showcard Gothic", "SimSun", "Snap ITC",
+    "Stencil", "Sylfaen", "Symbol",
+    "Tamil Latha", "Telugu", "Times New Roman",
+    "Traditional Arabic", "Trebuchet MS", "Tunga",
+    "Urdu Typesetting", "Vani", "Verdana",
+    "Vijaya", "Webdings", "Wingdings",
+    "Wingdings 2", "Wingdings 3",
+]
+
+# ──────────────────────────────────────────────────────────────
+# Firefox User Preferences — The "Nuclear Option"
+# ──────────────────────────────────────────────────────────────
+
+_LOCALE_BRANCHES = [
+    "x-western", "tr", "az", "x-central-euro", "x-cyrillic",
+    "x-baltic", "el", "he", "ar", "th",
+    "zh-CN", "zh-HK", "zh-TW", "ja", "ko",
+    "x-unicode", "x-user-def",
+]
+
+
+def build_firefox_prefs() -> dict[str, object]:
+    """Build Firefox about:config preferences for Windows spoofing.
+
+    Returns a dict of 50+ prefs that sever Gecko's connection to the
+    Linux host OS.  Pass these to ``AsyncCamoufox(firefox_user_prefs=...)``.
+
+    Categories:
+    1. GTK / XDG Desktop Portal Isolation
+    2. Font Visibility (Level 3 — All Fonts)
+    3. CSS Generic Family Overrides (17 Locales)
+    4. Font System Whitelist
+    5. UI Element Fonts
+    """
+    prefs: dict[str, object] = {}
+
+    # ── 1. GTK / XDG Desktop Portal Isolation ────────────────
+    prefs["widget.non-native-theme.enabled"] = True
+    prefs["widget.use-xdg-desktop-portal.settings"] = 0
+
+    # ── 2. Font Visibility (Level 3 — All Fonts) ─────────────
+    prefs["layout.css.font-visibility.standard"] = 3
+    prefs["layout.css.font-visibility.private"] = 3
+    prefs["layout.css.font-visibility.tracking-protection"] = 3
+
+    # ── 3. CSS Generic Family Overrides (17 Locales) ─────────
+    for _loc in _LOCALE_BRANCHES:
+        prefs[f"font.name-list.system-ui.{_loc}"] = "Segoe UI, Arial, sans-serif"
+        prefs[f"font.name.system-ui.{_loc}"] = "Segoe UI"
+        prefs[f"font.name.sans-serif.{_loc}"] = "Arial"
+        prefs[f"font.name-list.sans-serif.{_loc}"] = "Arial, Segoe UI, sans-serif"
+        prefs[f"font.name.serif.{_loc}"] = "Times New Roman"
+        prefs[f"font.name-list.serif.{_loc}"] = "Times New Roman, serif"
+        prefs[f"font.name.monospace.{_loc}"] = "Consolas"
+        prefs[f"font.name-list.monospace.{_loc}"] = "Consolas, Courier New, monospace"
+
+    # ── 4. Font System Whitelist ──────────────────────────────
+    prefs["font.system.whitelist"] = (
+        "Arial, Consolas, Courier New, Georgia, Impact, Lucida Console, "
+        "Lucida Sans Unicode, MS Sans Serif, MS Serif, Palatino Linotype, "
+        "Segoe UI, Tahoma, Times New Roman, Trebuchet MS, Verdana"
+    )
+
+    # ── 5. UI Element Fonts (prevent GTK font leaks) ─────────
+    prefs["ui.font.menu"] = "12px 'Segoe UI'"
+    prefs["ui.font.icon"] = "12px 'Segoe UI'"
+    prefs["ui.font.caption"] = "12px 'Segoe UI'"
+    prefs["ui.font.status-bar"] = "12px 'Segoe UI'"
+    prefs["ui.font.message-box"] = "12px 'Segoe UI'"
+    prefs["ui.font.small-caption"] = "12px 'Segoe UI'"
+
+    return prefs
 
 
 # ──────────────────────────────────────────────────────────────
@@ -32,16 +137,18 @@ logger = logging.getLogger(__name__)
 class FingerprintProfile:
     """Consistent browser fingerprint for anti-detection.
 
-    Default values represent a common Windows desktop Chrome setup.
-    All fields are used for fingerprint spoofing to ensure cross-signal consistency.
-    A mismatch between any two signals (e.g. UA says Chrome 125 but userAgentData
-    says Chrome 120) is a detection vector.
+    Default values represent a common Windows desktop profile.
+    Camoufox handles most of these at C++/BrowserForge level;
+    the JS safety net fills remaining gaps.
+
+    Note: For Camoufox, the primary OS/platform/user-agent spoofing
+    happens via the ``os=`` parameter.  These fields are used by the
+    JS safety net for defense-in-depth.
     """
 
     user_agent: str = (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/125.0.0.0 Safari/537.36"
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) "
+        "Gecko/20100101 Firefox/140.0"
     )
     platform: str = "Win32"
     language: str = "en-US"
@@ -58,113 +165,27 @@ class FingerprintProfile:
     max_touch_points: int = 0
     mobile: bool = False
 
-    @property
-    def chrome_version(self) -> str:
-        """Extract major Chrome version from user agent."""
-        match = re.search(r"Chrome/(\d+)", self.user_agent)
-        return match.group(1) if match else "125"
 
-    @property
-    def platform_version(self) -> str:
-        """Get platform version string for userAgentData high-entropy values."""
-        return "15.0.0" if self.platform == "Win32" else "10.15.7"
-
-
-# Default profile — a realistic Windows desktop Chrome setup.
+# Default profile — a realistic Windows desktop Firefox setup.
 DEFAULT_FINGERPRINT = FingerprintProfile()
 
 
 # ──────────────────────────────────────────────────────────────
-# §3 — Anti-Detection: Chrome Flags
+# §11 — JS Stealth Layer (Minimal Automation Cleanup)
 # ──────────────────────────────────────────────────────────────
 
-
-def build_chrome_flags(profile: FingerprintProfile) -> list[str]:
-    """Build anti-detection Chrome flags for ``uc.start(browser_args=…)``.
-
-    Each flag targets a specific detection vector.  See §3 of the Browser Stealth
-    Reference for detailed explanations of every flag.
-
-    Args:
-        profile: Fingerprint profile (used for window size).
-
-    Returns:
-        List of Chrome flag strings.
-    """
-    return [
-        # ── §3.1  Core stealth ────────────────────────────────
-        "--disable-blink-features=AutomationControlled",
-        "--disable-dev-shm-usage",
-        "--no-first-run",
-        "--no-default-browser-check",
-        f"--window-size={profile.screen_width},{profile.screen_height}",
-        # ── §3.2 + §3.4  Disabled features (single flag — Chrome uses last-wins)
-        (
-            "--disable-features=IsolateOrigins,site-per-process,"
-            "OptimizationHints,OptimizationHintsFetching,TranslateUI,"
-            "InterestFeedContentSuggestions,MediaRouter"
-        ),
-        # ── §3.3  WebRTC IP leak prevention (Layer 2 of 3) ───
-        "--webrtc-ip-handling-policy=disable_non_proxied_udp",
-        # ── §3.4  Anti-Turnstile / behavioural flags ──────────
-        "--disable-component-update",
-        # ── Stability / noise reduction ────────────────────────
-        "--disable-extensions",
-        "--disable-infobars",
-    ]
-
-
-# ──────────────────────────────────────────────────────────────
-# §4 — Anti-Detection: Global JS Stealth
-# ──────────────────────────────────────────────────────────────
-# Injection method : CDP Page.addScriptToEvaluateOnNewDocument(runImmediately=True)
-# Timing           : Runs BEFORE any page JavaScript on every new document.
-# Guard            : window._eF_ prevents double-injection.
-
-_JS_GLOBAL_STEALTH = r"""
+_JS_STEALTH = r"""
 (function() {
-    if (window._eF_) return;
-    window._eF_ = true;
+    if (window._eFz_) return;
+    window._eFz_ = true;
 
-    /* §4.1  navigator.webdriver → undefined */
+    /* navigator.webdriver → undefined (Firefox-native clean) */
     Object.defineProperty(navigator, 'webdriver', {
-        get: function() { return undefined; }
+        get: function() { return undefined; },
+        configurable: true
     });
 
-    /* §4.2  cdc_* global variable cleanup */
-    for (var key in window) {
-        if (key.substring(0, 4) === 'cdc_') {
-            delete window[key];
-        }
-    }
-
-    /* §4.3  window.chrome object */
-    if (!window.chrome) window.chrome = {};
-    if (!window.chrome.runtime) {
-        window.chrome.runtime = {
-            connect: function() {},
-            sendMessage: function() {}
-        };
-    }
-
-    /* §4.4  Error.stack CDP frame filtering */
-    var _origPrepareStackTrace = Error.prepareStackTrace;
-    Error.prepareStackTrace = function(error, structuredStackTrace) {
-        var filtered = structuredStackTrace.filter(function(callSite) {
-            var fileName = callSite.getFileName() || '';
-            return fileName.indexOf('devtools:') === -1 &&
-                   fileName.indexOf('nodriver') === -1 &&
-                   fileName.indexOf('puppeteer') === -1;
-        });
-        if (_origPrepareStackTrace) {
-            return _origPrepareStackTrace(error, filtered);
-        }
-        return filtered.map(function(cs) {
-            return '    at ' + cs.toString();
-        }).join('\n');
-    };
-
-    /* §4.5  navigator.permissions.query override */
+    /* navigator.permissions.query override */
     var _origPermsQuery = navigator.permissions.query.bind(navigator.permissions);
     navigator.permissions.query = function(desc) {
         if (desc && desc.name === 'notifications') {
@@ -173,7 +194,7 @@ _JS_GLOBAL_STEALTH = r"""
         return _origPermsQuery(desc);
     };
 
-    /* §4.6  navigator.languages consistency */
+    /* navigator.languages consistency */
     if (!navigator.language || typeof navigator.language !== 'string') {
         Object.defineProperty(navigator, 'language', {
             get: function() { return 'en-US'; }
@@ -186,123 +207,172 @@ _JS_GLOBAL_STEALTH = r"""
         });
     }
 
-    /* §4.7  Console filtering — suppress bot-signal messages */
-    var _origWarn = console.warn;
-    console.warn = function() {
-        var msg = arguments[0];
-        if (typeof msg === 'string') {
-            if (msg.indexOf('preloaded using link preload') !== -1) return;
-            if (msg.indexOf('Private Access Token') !== -1) return;
-        }
-        return _origWarn.apply(console, arguments);
-    };
-    var _origError = console.error;
-    console.error = function() {
-        var msg = arguments[0];
-        if (typeof msg === 'string') {
-            if (msg.indexOf('600010') !== -1) return;
-        }
-        return _origError.apply(console, arguments);
-    };
-
-    /* §4.8  document.hasFocus() → always true */
+    /* document.hasFocus() → always true */
     document.hasFocus = function() { return true; };
 
-    /* §4.9  window.outerWidth / outerHeight → match inner */
+    /* window.outerWidth / outerHeight → match inner */
     Object.defineProperty(window, 'outerWidth', {
         get: function() { return window.innerWidth; }
     });
     Object.defineProperty(window, 'outerHeight', {
         get: function() { return window.innerHeight; }
     });
+
+    /* Chrome-only global cleanup (Firefox only) */
+    ['chrome', 'opr', 'yandex'].forEach(function(p) {
+        if (window[p]) { delete window[p]; }
+    });
 })();
 """
 
 
 # ──────────────────────────────────────────────────────────────
-# §7 — WebRTC IP Leak Prevention  (Layer 3: JS Stub)
+# §10 — WebRTC Spoofing (Functional IP Sanitization)
 # ──────────────────────────────────────────────────────────────
-# Replaces the native WebRTC API with fake implementations so that
-# STUN/TURN requests can never leak the real IP.
+# Replaces native RTCPeerConnection with a functional wrapper that
+# sanitizes ICE candidates and SDP descriptions.
 # Guard: window._eW_ prevents double-injection.
 
-_JS_WEBRTC_BLOCK = r"""
-(function() {
+
+def build_webrtc_spoof(proxy_ip: str = "0.0.0.0") -> str:
+    """Build the WebRTC spoof init script with the given proxy IP.
+
+    Args:
+        proxy_ip: Public IP of the proxy to inject into ICE candidates.
+
+    Returns:
+        JavaScript source code string.
+    """
+    _ip = json.dumps(proxy_ip)
+    return f"""
+(function() {{
     if (window._eW_) return;
     window._eW_ = true;
 
-    /* FakePC — stubs all methods, returns empty promises */
-    function FakePC(config) {
-        this.localDescription = null;
-        this.remoteDescription = null;
-        this.signalingState = 'stable';
-        this.iceConnectionState = 'new';
-        this.iceGatheringState = 'new';
-        this.connectionState = 'new';
-        this.currentLocalDescription = null;
-        this.currentRemoteDescription = null;
-        this.pendingLocalDescription = null;
-        this.pendingRemoteDescription = null;
-        this.onicecandidate = null;
-        this.ontrack = null;
-        this.onicecandidateerror = null;
-        this.onnegotiationneeded = null;
-        this.onsignalingstatechange = null;
-        this.oniceconnectionstatechange = null;
-        this.onicegatheringstatechange = null;
-        this.onconnectionstatechange = null;
-        this.ondatachannel = null;
-        this.onremovetrack = null;
-    }
-    FakePC.prototype.createOffer = function() {
-        return Promise.resolve({type: 'offer', sdp: ''});
-    };
-    FakePC.prototype.createAnswer = function() {
-        return Promise.resolve({type: 'answer', sdp: ''});
-    };
-    FakePC.prototype.setLocalDescription = function(desc) {
-        this.localDescription = desc;
-        this.currentLocalDescription = desc;
-        return Promise.resolve();
-    };
-    FakePC.prototype.setRemoteDescription = function(desc) {
-        this.remoteDescription = desc;
-        this.currentRemoteDescription = desc;
-        return Promise.resolve();
-    };
-    FakePC.prototype.addIceCandidate = function() {
-        return Promise.resolve();
-    };
-    FakePC.prototype.createDataChannel = function(label) {
-        return {label: label, readyState: 'closed', close: function() {}};
-    };
-    FakePC.prototype.getStats = function() {
-        return Promise.resolve(new Map());
-    };
-    FakePC.prototype.close = function() {
-        this.signalingState = 'closed';
-        this.connectionState = 'closed';
-        this.iceConnectionState = 'closed';
-    };
-    FakePC.prototype.addEventListener = function() {};
-    FakePC.prototype.removeEventListener = function() {};
-    FakePC.prototype.dispatchEvent = function() { return true; };
+    var _proxyIP = {_ip};
 
-    window.RTCPeerConnection = FakePC;
-    window.webkitRTCPeerConnection = FakePC;
-    window.mozRTCPeerConnection = FakePC;
+    /* ── IP replacement in SDP ─────────────────────────── */
+    function _replaceIPs(sdp) {{
+        return sdp.replace(/(\\d{{1,3}}\\.){{3}}\\d{{1,3}}/g, function(m) {{
+            var p = m.split('.');
+            /* Skip private / loopback / CGNAT ranges */
+            if (p[0] === '10' || p[0] === '127' || p[0] === '0') return m;
+            if (p[0] === '169' && p[1] === '254') return m;
+            if (p[0] === '172' && parseInt(p[1]) >= 16 && parseInt(p[1]) <= 31) return m;
+            if (p[0] === '192' && p[1] === '168') return m;
+            if (p[0] === '100' && parseInt(p[1]) >= 64 && parseInt(p[1]) <= 127) return m;
+            return _proxyIP;
+        }});
+    }}
 
-    window.RTCSessionDescription = function(init) {
-        this.type = init ? init.type : '';
-        this.sdp = init ? init.sdp : '';
-    };
+    /* ── Candidate sanitizer ────────────────────────────── */
+    function _sanitizeCandidate(e, ip) {{
+        if (e.candidate && e.candidate.candidate) {{
+            e.candidate.candidate = _replaceIPs(e.candidate.candidate);
+        }}
+    }}
 
-    window.RTCIceCandidate = function(init) {
-        this.candidate = init ? init.candidate : '';
-        this.sdpMid = init ? init.sdpMid : '';
-        this.sdpMLineIndex = init ? init.sdpMLineIndex : 0;
-    };
-})();
+    /* ── Wrapper class ──────────────────────────────────── */
+    var NativePC = window.RTCPeerConnection || window.webkitRTCPeerConnection;
+    if (!NativePC) return;
+
+    function _WrappedPC(config) {{
+        var self = this;
+        var _pc = new NativePC(config);
+        var _savedHandlers = {{}};
+        var _origAdd = _pc.addEventListener.bind(_pc);
+
+        /* Intercept createOffer */
+        var _origCreateOffer = _pc.createOffer.bind(_pc);
+        _pc.createOffer = function() {{
+            return _origCreateOffer.apply(this, arguments).then(function(desc) {{
+                if (desc && desc.sdp) desc.sdp = _replaceIPs(desc.sdp);
+                return desc;
+            }});
+        }};
+
+        /* Intercept createAnswer */
+        var _origCreateAnswer = _pc.createAnswer.bind(_pc);
+        _pc.createAnswer = function() {{
+            return _origCreateAnswer.apply(this, arguments).then(function(desc) {{
+                if (desc && desc.sdp) desc.sdp = _replaceIPs(desc.sdp);
+                return desc;
+            }});
+        }};
+
+        /* Intercept setLocalDescription */
+        var _origSetLocal = _pc.setLocalDescription.bind(_pc);
+        _pc.setLocalDescription = function(desc) {{
+            if (desc && desc.sdp) desc.sdp = _replaceIPs(desc.sdp);
+            return _origSetLocal(desc);
+        }};
+
+        /* Intercept setRemoteDescription */
+        var _origSetRemote = _pc.setRemoteDescription.bind(_pc);
+        _pc.setRemoteDescription = function(desc) {{
+            if (desc && desc.sdp) desc.sdp = _replaceIPs(desc.sdp);
+            return _origSetRemote(desc);
+        }};
+
+        /* Intercept onicecandidate */
+        Object.defineProperty(_pc, 'onicecandidate', {{
+            get: function() {{ return _savedHandlers['icecandidate']; }},
+            set: function(fn) {{
+                _savedHandlers['icecandidate'] = fn;
+                if (fn) {{
+                    _pc.addEventListener('icecandidate', function(e) {{
+                        _sanitizeCandidate(e, _proxyIP);
+                        fn.call(_pc, e);
+                    }});
+                }}
+            }},
+            configurable: true
+        }});
+
+        /* Intercept addEventListener for icecandidate */
+        _pc.addEventListener = function(type, handler, options) {{
+            if (type === 'icecandidate') {{
+                var wrapped = function(e) {{
+                    _sanitizeCandidate(e, _proxyIP);
+                    handler.call(this, e);
+                }};
+                return _origAdd(type, wrapped, options);
+            }}
+            return _origAdd(type, handler, options);
+        }};
+
+        /* Proxy: expose underlying PC properties */
+        var propNames = Object.getOwnPropertyNames(NativePC.prototype);
+        propNames.forEach(function(name) {{
+            if (!(name in self)) {{
+                Object.defineProperty(self, name, {{
+                    get: function() {{ return _pc[name]; }},
+                    set: function(v) {{ _pc[name] = v; }},
+                    configurable: true
+                }});
+            }}
+        }});
+
+        self._pc = _pc;
+    }}
+
+    /* Wrap all methods */
+    var _methods = ['createOffer', 'createAnswer', 'setLocalDescription',
+                    'setRemoteDescription', 'addIceCandidate', 'close',
+                    'getStats', 'createDataChannel',
+                    'addEventListener', 'removeEventListener', 'dispatchEvent'];
+    _methods.forEach(function(m) {{
+        if (NativePC.prototype[m]) {{
+            _WrappedPC.prototype[m] = function() {{
+                return this._pc[m].apply(this._pc, arguments);
+            }};
+        }}
+    }});
+
+    window.RTCPeerConnection = _WrappedPC;
+    window.webkitRTCPeerConnection = _WrappedPC;
+    window.mozRTCPeerConnection = _WrappedPC;
+}})();
 """
 
 
@@ -314,9 +384,16 @@ _JS_WEBRTC_BLOCK = r"""
 def build_fingerprint_script(profile: FingerprintProfile) -> str:
     """Build the JavaScript fingerprint-spoofing script.
 
-    Fills the gaps where CDP Emulation APIs do not reach (screen properties,
-    WebGL, userAgentData, plugins, etc.).  The generated script is injected
-    via ``CDP Page.addScriptToEvaluateOnNewDocument(runImmediately=True)``.
+    Fills gaps not covered by Camoufox C++/BrowserForge:
+    - window.screen.*
+    - navigator.deviceMemory
+    - navigator.languages / language
+    - navigator.maxTouchPoints
+    - WebGL vendor/renderer
+    - navigator.platform (extra safety)
+    - navigator.oscpu (Firefox-specific leak)
+    - navigator.connection (NetworkInformation API)
+    - navigator.plugins
 
     Args:
         profile: Fingerprint profile with spoofing values.
@@ -324,25 +401,20 @@ def build_fingerprint_script(profile: FingerprintProfile) -> str:
     Returns:
         JavaScript source code string.
     """
-    version = profile.chrome_version
-    full_version = f"{version}.0.6422.112"
-    mobile_js = "true" if profile.mobile else "false"
-
-    # JSON-escape string values for safe JS interpolation (prevents injection)
-    _version = json.dumps(version)
-    _full_version = json.dumps(full_version)
     _platform = json.dumps(profile.platform)
-    _platform_version = json.dumps(profile.platform_version)
     _language = json.dumps(profile.language)
     _webgl_vendor = json.dumps(profile.webgl_vendor)
     _webgl_renderer = json.dumps(profile.webgl_renderer)
 
     return f"""
 (function() {{
-    if (window._eP_) return;
-    window._eP_ = true;
+    if (window._eF_) return;
+    window._eF_ = true;
 
-    /* §6.1  window.screen.* — CDP setDeviceMetricsOverride does NOT touch these */
+    var _ua = navigator.userAgent;
+    var _isFx = (_ua.indexOf('Firefox') !== -1);
+
+    /* §6.1  window.screen.* */
     var _screen = Object.create(window.screen);
     Object.defineProperty(_screen, 'width',       {{ get: function() {{ return {profile.screen_width}; }} }});
     Object.defineProperty(_screen, 'height',      {{ get: function() {{ return {profile.screen_height}; }} }});
@@ -359,46 +431,9 @@ def build_fingerprint_script(profile: FingerprintProfile) -> str:
         get: function() {{ return {profile.device_memory}; }}
     }});
 
-    /* §6.3  navigator.hardwareConcurrency (safety net for CDP override) */
+    /* §6.3  navigator.hardwareConcurrency (safety net) */
     Object.defineProperty(Navigator.prototype, 'hardwareConcurrency', {{
         get: function() {{ return {profile.hardware_concurrency}; }}
-    }});
-
-    /* §6.4  navigator.userAgentData (User-Agent Client Hints) */
-    var _brands = Object.freeze([
-        {{ brand: 'Google Chrome', version: {_version} }},
-        {{ brand: 'Chromium', version: {_version} }},
-        {{ brand: 'Not.A/Brand', version: '24' }}
-    ]);
-    var _uaData = {{
-        brands: _brands,
-        mobile: {mobile_js},
-        platform: {_platform},
-        getHighEntropyValues: function(hints) {{
-            return Promise.resolve({{
-                brands: _brands,
-                mobile: {mobile_js},
-                platform: {_platform},
-                platformVersion: {_platform_version},
-                architecture: 'x86',
-                bitness: '64',
-                model: '',
-                uaFullVersion: {_full_version},
-                fullVersionList: _brands.map(function(b) {{
-                    return {{ brand: b.brand, version: {_full_version} }};
-                }})
-            }});
-        }},
-        toJSON: function() {{
-            return {{
-                brands: _brands,
-                mobile: {mobile_js},
-                platform: {_platform}
-            }};
-        }}
-    }};
-    Object.defineProperty(Navigator.prototype, 'userAgentData', {{
-        get: function() {{ return _uaData; }}
     }});
 
     /* §6.5  navigator.languages / navigator.language */
@@ -417,26 +452,35 @@ def build_fingerprint_script(profile: FingerprintProfile) -> str:
         get: function() {{ return {profile.max_touch_points}; }}
     }});
 
-    /* §6.7  WebGL vendor / renderer spoofing (CDP has NO WebGL override) */
-    var origGetParam = WebGLRenderingContext.prototype.getParameter;
-    WebGLRenderingContext.prototype.getParameter = function(param) {{
-        if (param === 0x9245) return {_webgl_vendor};
-        if (param === 0x9246) return {_webgl_renderer};
-        return origGetParam.call(this, param);
-    }};
-    var origGetParam2 = WebGL2RenderingContext.prototype.getParameter;
-    WebGL2RenderingContext.prototype.getParameter = function(param) {{
-        if (param === 0x9245) return {_webgl_vendor};
-        if (param === 0x9246) return {_webgl_renderer};
-        return origGetParam2.call(this, param);
-    }};
+    /* §6.7  WebGL vendor / renderer spoofing */
+    if ({_webgl_vendor} && {_webgl_renderer}) {{
+        var origGetParam = WebGLRenderingContext.prototype.getParameter;
+        WebGLRenderingContext.prototype.getParameter = function(param) {{
+            if (param === 0x9245) return {_webgl_vendor};
+            if (param === 0x9246) return {_webgl_renderer};
+            return origGetParam.call(this, param);
+        }};
+        var origGetParam2 = WebGL2RenderingContext.prototype.getParameter;
+        WebGL2RenderingContext.prototype.getParameter = function(param) {{
+            if (param === 0x9245) return {_webgl_vendor};
+            if (param === 0x9246) return {_webgl_renderer};
+            return origGetParam2.call(this, param);
+        }};
+    }}
 
     /* §6.10  navigator.platform override */
     Object.defineProperty(Navigator.prototype, 'platform', {{
         get: function() {{ return {_platform}; }}
     }});
 
-    /* §6.11  navigator.connection (NetworkInformation API) */
+    /* §6.11  navigator.oscpu (Firefox-specific leak) */
+    if (_isFx) {{
+        Object.defineProperty(Navigator.prototype, 'oscpu', {{
+            get: function() {{ return 'Windows NT 10.0; Win64; x64'; }}
+        }});
+    }}
+
+    /* §6.12  navigator.connection (NetworkInformation API) */
     if (navigator.connection) {{
         var _conn = Object.create(Object.getPrototypeOf(navigator.connection));
         Object.defineProperty(_conn, 'downlink',      {{ get: function() {{ return 10; }} }});
@@ -448,57 +492,41 @@ def build_fingerprint_script(profile: FingerprintProfile) -> str:
         }});
     }}
 
-    /* §6.12  navigator.plugins — empty array is an automation signal */
-    var _plugins = {{
-        0: {{ name: 'PDF Viewer',         filename: 'internal-pdf-viewer', description: 'Portable Document Format' }},
-        1: {{ name: 'Chrome PDF Viewer',   filename: 'internal-pdf-viewer', description: 'Portable Document Format' }},
-        2: {{ name: 'Chromium PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' }},
-        length: 3,
-        item: function(i) {{ return this[i] || null; }},
-        namedItem: function(n) {{
-            for (var i = 0; i < this.length; i++) {{
-                if (this[i].name === n) return this[i];
-            }}
-            return null;
-        }},
-        refresh: function() {{}}
-    }};
-    Object.defineProperty(Navigator.prototype, 'plugins', {{
-        get: function() {{ return _plugins; }}
-    }});
-
-    /* §6.13  chrome.loadTimes — missing = automation */
-    if (window.chrome) {{
-        window.chrome.loadTimes = function() {{
-            return {{
-                requestTime: performance.timing.navigationStart / 1000,
-                startLoadTime: performance.timing.navigationStart / 1000,
-                commitLoadTime: performance.timing.navigationStart / 1000 + 0.1,
-                finishDocumentLoadTime: performance.timing.loadEventEnd / 1000 || Date.now() / 1000,
-                finishLoadTime: performance.timing.loadEventEnd / 1000 || Date.now() / 1000,
-                firstPaintTime: 0,
-                firstPaintAfterLoadTime: 0,
-                navigationType: 'Other',
-                wasFetchedViaSpdy: false,
-                wasNpnNegotiated: true,
-                npnNegotiatedProtocol: 'h2',
-                wasAlternateProtocolAvailable: false,
-                connectionInfo: 'h2'
-            }};
+    /* §6.13  navigator.plugins — Firefox-native plugin list */
+    if (_isFx) {{
+        var _plugins = {{
+            0: {{ name: 'PDF Viewer',         filename: 'internal-pdf-viewer', description: 'Portable Document Format' }},
+            1: {{ name: 'DRM Content Decryption Module', filename: 'drm-cdm', description: 'Widevine Content Decryption Module' }},
+            2: {{ name: 'Firefox PDF Viewer',  filename: 'internal-pdf-viewer', description: 'Firefox PDF Viewer' }},
+            length: 3,
+            item: function(i) {{ return this[i] || null; }},
+            namedItem: function(n) {{
+                for (var i = 0; i < this.length; i++) {{
+                    if (this[i].name === n) return this[i];
+                }}
+                return null;
+            }},
+            refresh: function() {{}}
         }};
-
-        /* §6.14  chrome.csi — missing = automation */
-        window.chrome.csi = function() {{
-            return {{
-                onloadT: Date.now(),
-                pageT: performance.now(),
-                startE: Date.now(),
-                tran: 15
-            }};
-        }};
+        Object.defineProperty(Navigator.prototype, 'plugins', {{
+            get: function() {{ return _plugins; }}
+        }});
     }}
 
-    /* §6.9  Performance.hardwareConcurrency safety net */
+    /* §6.14  Firefox internal consistency */
+    if (_isFx) {{
+        Object.defineProperty(Navigator.prototype, 'vendor', {{
+            get: function() {{ return ''; }}
+        }});
+        Object.defineProperty(Navigator.prototype, 'product', {{
+            get: function() {{ return 'Gecko'; }}
+        }});
+        Object.defineProperty(Navigator.prototype, 'buildID', {{
+            get: function() {{ return '20181001000000'; }}
+        }});
+    }}
+
+    /* Performance.hardwareConcurrency safety net */
     if (window.Performance && window.Performance.prototype) {{
         Object.defineProperty(window.Performance.prototype, 'hardwareConcurrency', {{
             get: function() {{ return {profile.hardware_concurrency}; }}
@@ -509,195 +537,180 @@ def build_fingerprint_script(profile: FingerprintProfile) -> str:
 
 
 # ──────────────────────────────────────────────────────────────
-# §7 — WebRTC Preferences  (Layer 1: Chromium Preferences)
+# §6/§11 — JS Font Spoof (Font Whitelist + CSS Prototype Overrides)
 # ──────────────────────────────────────────────────────────────
 
+_JS_FONT_SPOOF = r"""
+(function() {
+    if (window._eFzF_) return;
+    window._eFzF_ = true;
 
-def inject_webrtc_prefs(user_data_dir: str) -> None:
-    """Write WebRTC preferences into Chrome's ``Default/Preferences`` file.
+    /* Windows 10 font whitelist (lowercase) */
+    var _fonts = {};
+    var _fontList = [
+        'arial', 'segoe ui', 'consolas', 'times new roman',
+        'calibri', 'cambria', 'candara', 'courier new',
+        'georgia', 'impact', 'lucida console', 'lucida sans unicode',
+        'ms sans serif', 'ms serif', 'palatino linotype',
+        'tahoma', 'trebuchet ms', 'verdana',
+        'arial black', 'arial narrow', 'book antiqua',
+        'bookman old style', 'century gothic', 'comic sans ms',
+        'courier', 'ebrima', 'franklin gothic',
+        'gabriola', 'gadugi', 'garamond',
+        'gill sans mt', 'goudy old style', 'haettenschweiler',
+        'lucida bright', 'lucida calligraphy', 'lucida fax',
+        'lucida handwriting', 'lucida sans', 'magneto',
+        'maiandra gd', 'malgun gothic', 'microsoft sans serif',
+        'microsoft yahei', 'monotype corsiva', 'nyala',
+        'ocr a extended', 'old english text mt', 'onyx',
+        'palace script mt', 'papyrus', 'parchment',
+        'perpetua', 'playbill', 'poor richard',
+        'pristina', 'rage italic', 'ravie',
+        'rockwell', 'script mt bold', 'segoe print',
+        'segoe script', 'segoe ui historic', 'segoe ui symbol',
+        'showcard gothic', 'simsun', 'snap itc',
+        'stencil', 'sylfaen', 'symbol',
+        'webdings', 'wingdings'
+    ];
+    _fontList.forEach(function(f) { _fonts[f] = true; });
 
-    This is **Layer 1 of 3** for WebRTC IP leak prevention and must be called
-    *before* the browser is launched, because Chrome reads this file on startup.
-
-    Args:
-        user_data_dir: Path to the Chrome user-data directory.
-    """
-    prefs_path = Path(user_data_dir) / "Default" / "Preferences"
-    prefs_path.parent.mkdir(parents=True, exist_ok=True)
-
-    prefs: dict = {}
-    if prefs_path.exists():
-        try:
-            with open(prefs_path, "r") as f:
-                prefs = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            prefs = {}
-
-    # WebRTC core prefs
-    prefs.setdefault("profile", {})
-    prefs["profile"]["webRTC"] = {
-        "multiple_routes_enabled": False,
-        "nonproxied_udp_enabled": False,
-        "network_link_capacity_estimate": False,
+    function _ok(family) {
+        if (!family) return true;
+        var f = family.toLowerCase().replace(/["']/g, '').trim();
+        /* Always allow CSS generic families */
+        if (f === 'sans-serif' || f === 'serif' || f === 'monospace' ||
+            f === 'system-ui' || f === 'cursive' || f === 'fantasy') return true;
+        return !!_fonts[f];
     }
 
-    # default_public_interface_only (= 1)
-    prefs.setdefault("default_content_setting_values", {})
-    prefs["default_content_setting_values"]["webrtc_ip_handling_policy"] = 1
+    /* ── FontFaceSet Iteration Filtering ─────────────────── */
+    function _filteredForEach(callback, thisArg) {
+        var self = this;
+        var orig = FontFaceSet.prototype.forEach;
+        return orig.call(self, function(face) {
+            if (_ok(face.family)) {
+                callback.call(thisArg, face);
+            }
+        });
+    }
 
-    # Enable mDNS for local-IP masking
-    prefs.setdefault("browser", {})
-    prefs["browser"]["enabled_labs_experiments"] = [
-        "enable-webrtc-hide-local-ips-with-mdns@1",
-    ]
+    function _filteredIterator() {
+        var self = this;
+        var faces = [];
+        FontFaceSet.prototype.forEach.call(self, function(face) {
+            if (_ok(face.family)) faces.push(face);
+        });
+        var idx = 0;
+        return {
+            next: function() {
+                if (idx < faces.length) return {value: faces[idx++], done: false};
+                return {value: undefined, done: true};
+            }
+        };
+    }
 
-    try:
-        with open(prefs_path, "w") as f:
-            json.dump(prefs, f, indent=2)
-        logger.debug("WebRTC preferences injected into %s", prefs_path)
-    except OSError as exc:
-        logger.warning("Failed to write WebRTC preferences: %s", exc)
+    if (window.FontFaceSet) {
+        FontFaceSet.prototype.forEach = _filteredForEach;
+        FontFaceSet.prototype.values = _filteredIterator;
+        FontFaceSet.prototype.entries = _filteredIterator;
+        FontFaceSet.prototype.keys = _filteredIterator;
+        FontFaceSet.prototype[Symbol.iterator] = _filteredIterator;
+    }
+
+    /* ── queryLocalFonts() Filtering ─────────────────────── */
+    if (window.queryLocalFonts) {
+        var _origQuery = window.queryLocalFonts.bind(window);
+        window.queryLocalFonts = function() {
+            return _origQuery().then(function(fonts) {
+                return fonts.filter(function(f) { return _ok(f.family); });
+            });
+        };
+    }
+
+    /* ── CSS Prototype Override (CreepJS Defense) ────────── */
+    var _cssProto = CSSStyleDeclaration.prototype;
+    var _origGetPropertyValue = _cssProto.getPropertyValue;
+    _cssProto.getPropertyValue = function(prop) {
+        var val = _origGetPropertyValue.call(this, prop);
+        if ((prop === 'font-family' || prop === 'font') && val) {
+            if (val.includes('Cantarell') || val.includes('Ubuntu') ||
+                val.includes('Linux') || val.includes('system-ui') || val.includes('sans-serif')) {
+                return val.replace(/Cantarell|Ubuntu|Linux|sans-serif|system-ui/g, 'Segoe UI');
+            }
+        }
+        return val;
+    };
+
+    var _descFontFamily = Object.getOwnPropertyDescriptor(_cssProto, 'fontFamily');
+    if (_descFontFamily && _descFontFamily.get) {
+        Object.defineProperty(_cssProto, 'fontFamily', {
+            get: function() {
+                var val = _descFontFamily.get.call(this);
+                if (val && (val.includes('Cantarell') || val.includes('Ubuntu') || val.includes('Linux'))) {
+                    return 'Segoe UI, Arial, sans-serif';
+                }
+                return val;
+            },
+            set: _descFontFamily.set,
+            configurable: true
+        });
+    }
+
+    var _descFont = Object.getOwnPropertyDescriptor(_cssProto, 'font');
+    if (_descFont && _descFont.get) {
+        Object.defineProperty(_cssProto, 'font', {
+            get: function() {
+                var val = _descFont.get.call(this);
+                if (val && (val.includes('Cantarell') || val.includes('Ubuntu') || val.includes('Linux'))) {
+                    return val.replace(/Cantarell|Ubuntu|Linux|sans-serif|system-ui/g, 'Segoe UI');
+                }
+                return val;
+            },
+            set: _descFont.set,
+            configurable: true
+        });
+    }
+})();
+"""
 
 
 # ──────────────────────────────────────────────────────────────
-# §5 — CDP Fingerprint Emulation + Script Injection
+# Stealth Application Helper
 # ──────────────────────────────────────────────────────────────
 
 
-async def apply_stealth(browser, profile: FingerprintProfile) -> bool:
-    """Apply all anti-detection measures to a browser instance.
-
-    Must be called **after** ``uc.start()`` but **before** navigating to the
-    target URL.  Uses CDP commands for server-side overrides and injects three
-    JavaScript stealth scripts via ``addScriptToEvaluateOnNewDocument`` so they
-    run before any page JavaScript on *every* new document.
+async def apply_stealth(page, profile: FingerprintProfile, proxy_ip: str = "") -> None:
+    """Apply all JS stealth init scripts to a page.
 
     Injection order (critical):
-
-    1. ``Debugger.disable()`` — prevents Turnstile ``debugger;`` timing detection
-    2. ``Page.set_bypass_csp(True)`` — ensures JS injection is not blocked by CSP
-    3. CDP fingerprint overrides — UserAgent, timezone, locale, viewport, HW concurrency
-    4. Global stealth script — navigator.webdriver, cdc_*, chrome object, etc.
-    5. WebRTC block script — replaces RTCPeerConnection with stubs
-    6. Fingerprint script — screen, WebGL, plugins, userAgentData, etc.
+    1. ``_JS_STEALTH`` — navigator.webdriver cleanup, permissions
+    2. ``_JS_FONT_SPOOF`` — Font whitelist + CSS prototype overrides
+    3. ``_JS_WEBRTC_SPOOF`` — ICE candidate sanitization
+    4. ``fingerprint_script`` — Screen/navigator/WebGL/oscpu spoofing
 
     Args:
-        browser: nodriver ``Browser`` instance (just created).
+        page: Playwright ``Page`` instance (from ``browser.new_page()``).
         profile: Fingerprint profile to apply.
-
-    Returns:
-        ``True`` if stealth was fully applied, ``False`` if any critical step failed.
+        proxy_ip: Public IP of the proxy for WebRTC spoofing (optional).
     """
-    try:
-        tab = browser.main_tab
-        if tab is None:
-            logger.warning("No main tab available for stealth application")
-            return False
+    scripts = [
+        ("stealth", _JS_STEALTH),
+        ("font_spoof", _JS_FONT_SPOOF),
+        ("webrtc_spoof", build_webrtc_spoof(proxy_ip)),
+        ("fingerprint", build_fingerprint_script(profile)),
+    ]
 
-        # Import CDP command modules — these are auto-generated from the CDP spec.
+    for name, script in scripts:
         try:
-            from nodriver.cdp import debugger as cdp_debugger
-            from nodriver.cdp import emulation as cdp_emulation
-            from nodriver.cdp import network as cdp_network
-            from nodriver.cdp import page as cdp_page
-        except ImportError as exc:
-            logger.warning("CDP modules not available — stealth skipped: %s", exc)
-            return False
-
-        # ── Step 1: Debugger.disable() — must come first ──────
-        try:
-            await tab.send(cdp_debugger.disable())
-        except Exception:
-            logger.debug("Debugger.disable() skipped (debugger may not be attached)")
-
-        # ── Step 2: Bypass CSP ────────────────────────────────
-        try:
-            await tab.send(cdp_page.set_bypass_csp(True))
+            await page.add_init_script(script)
+            logger.debug("Init script '%s' registered", name)
         except Exception as exc:
-            logger.debug("set_bypass_csp failed: %s", exc)
+            logger.debug("Init script '%s' failed: %s", name, exc)
 
-        # ── Step 3: CDP fingerprint overrides ─────────────────
-
-        # User-Agent (+ Accept-Language header, platform header)
-        try:
-            await tab.send(cdp_network.set_user_agent_override(
-                user_agent=profile.user_agent,
-                accept_language=f"{profile.language},en;q=0.9",
-                platform=profile.platform,
-            ))
-        except Exception as exc:
-            logger.debug("set_user_agent_override failed: %s", exc)
-
-        # Timezone
-        try:
-            await tab.send(cdp_emulation.set_timezone_override(
-                timezone_id=profile.timezone,
-            ))
-        except Exception as exc:
-            logger.debug("set_timezone_override failed: %s", exc)
-
-        # Locale
-        try:
-            await tab.send(cdp_emulation.set_locale_override(
-                locale=profile.language,
-            ))
-        except Exception as exc:
-            logger.debug("set_locale_override failed: %s", exc)
-
-        # Viewport / device metrics
-        try:
-            await tab.send(cdp_emulation.set_device_metrics_override(
-                width=profile.screen_width,
-                height=profile.screen_height,
-                device_scale_factor=1,
-                mobile=profile.mobile,
-            ))
-        except Exception as exc:
-            logger.debug("set_device_metrics_override failed: %s", exc)
-
-        # Hardware concurrency
-        try:
-            await tab.send(cdp_emulation.set_hardware_concurrency_override(
-                hardware_concurrency=profile.hardware_concurrency,
-            ))
-        except Exception as exc:
-            logger.debug("set_hardware_concurrency_override failed: %s", exc)
-
-        # ── Steps 4-6: Inject JS stealth scripts ──────────────
-        fingerprint_script = build_fingerprint_script(profile)
-
-        scripts = [
-            ("global_stealth", _JS_GLOBAL_STEALTH),
-            ("webrtc_block", _JS_WEBRTC_BLOCK),
-            ("fingerprint", fingerprint_script),
-        ]
-
-        for name, script in scripts:
-            # Register for all FUTURE navigations
-            try:
-                await tab.send(cdp_page.add_script_to_evaluate_on_new_document(
-                    source=script,
-                    run_immediately=True,
-                ))
-            except Exception as exc:
-                logger.debug("add_script (%s) failed: %s", name, exc)
-
-            # Also evaluate IMMEDIATELY on the current page (about:blank)
-            try:
-                await tab.evaluate(script)
-            except Exception:
-                # Expected to fail on about:blank for some scripts
-                logger.debug("Immediate evaluate (%s) skipped", name)
-
-        logger.debug(
-            "Stealth applied: UA=%s… tz=%s screen=%dx%d",
-            profile.user_agent[:60],
-            profile.timezone,
-            profile.screen_width,
-            profile.screen_height,
-        )
-        return True
-
-    except Exception as exc:
-        logger.warning("Failed to apply stealth measures: %s", exc)
-        return False
+    logger.debug(
+        "Stealth applied: %d scripts, screen=%dx%d, tz=%s",
+        len(scripts),
+        profile.screen_width,
+        profile.screen_height,
+        profile.timezone,
+    )

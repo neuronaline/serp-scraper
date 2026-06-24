@@ -94,6 +94,10 @@ def _build_chrome_proxy_arg(proxy: dict) -> Optional[str]:
     Returns just scheme://host:port (no user:pass). Authentication
     must be handled separately via CDP Fetch.authRequired event.
 
+    Note: This function is retained for backward compatibility.
+    The Camoufox-based parsers use Playwright's native proxy support
+    which does support authenticated proxies.
+
     Args:
         proxy: Proxy dict with 'server' key.
 

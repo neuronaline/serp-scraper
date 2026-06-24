@@ -1,4 +1,4 @@
-"""SERP search and page fetch with nodriver.
+"""SERP search and page fetch with Camoufox.
 
 This module provides functions for searching search engines (Google, Bing)
 and fetching web pages, with support for proxies, caching, and CAPTCHA handling.

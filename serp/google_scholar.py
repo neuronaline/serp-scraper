@@ -12,7 +12,7 @@ a BS4-first strategy for robustness:
    - If Scholar page has cached/static content accessible, parse it
    - This may succeed for simple queries or cached pages
 
-2. FALLBACK: Browser-based (nodriver)
+2. FALLBACK: Browser-based (Camoufox)
    - Invoked when BS4 fetch fails or returns unusable content
    - Handles JavaScript-rendered Scholar pages
    - More reliable but heavier resource usage
@@ -50,19 +50,16 @@ from .parsers import (
     _check_captcha,
     _cleanup_browser,
     _create_browser,
-    _extract_js_value,
+    _create_page,
+    _get_page_html,
+    _wait_for_results,
 )
 from .types import RetryPolicy
 from .utils import (
+    CaptchaError,
     PageTimeoutError,
     ProxyError,
     _random_user_agent,
-)
-from nodriver.cdp.fetch import (
-    enable as fetch_enable,
-    AuthRequired,
-    continue_with_auth,
-    AuthChallengeResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -140,7 +137,7 @@ SCHOLAR_BASE_URL = "https://scholar.google.com/scholar"
 class ScholarClient:
     """Client for scraping Google Scholar.
 
-    This client uses browser automation (nodriver) to fetch and parse
+    This client uses browser automation (Camoufox) to fetch and parse
     academic papers from Google Scholar.
 
     Example:
@@ -324,11 +321,11 @@ class ScholarClient:
             "password": ps.dataimpulse_pass or "",
         }
 
-    async def _parse_results(self, tab, page_num: int) -> list[ScholarResult]:
+    async def _parse_results(self, page, page_num: int) -> list[ScholarResult]:
         """Parse Google Scholar results using JavaScript evaluation.
 
         Args:
-            tab: nodriver Tab with loaded page
+            page: Playwright Page with loaded Scholar results
             page_num: Current page number (0-indexed)
 
         Returns:
@@ -340,26 +337,21 @@ class ScholarClient:
             const containers = document.querySelectorAll('div.gs_r.gs_or.gs_scl');
 
             containers.forEach((container, idx) => {
-                // Get the result item (gs_ri) or PDF container (gs_ggs)
                 const resultItem = container.querySelector('div.gs_ri');
                 const pdfContainer = container.querySelector('div.gs_ggs');
 
                 if (!resultItem && !pdfContainer) return;
 
-                // Get title and link
                 const titleEl = resultItem ? resultItem.querySelector('h3.gs_rt a') : null;
                 const title = titleEl ? (titleEl.innerText || titleEl.textContent || '') : '';
                 const url = titleEl ? (titleEl.href || '') : '';
 
-                // Get snippet/abstract
                 const snippetEl = resultItem ? resultItem.querySelector('div.gs_rs') : null;
                 const snippet = snippetEl ? (snippetEl.innerText || snippetEl.textContent || '') : '';
 
-                // Get metadata (authors, year, venue)
                 const metaEl = resultItem ? resultItem.querySelector('div.gs_a') : null;
                 const metadata = metaEl ? (metaEl.innerText || metaEl.textContent || '') : '';
 
-                // Get citation count from footer
                 const footerEl = resultItem ? resultItem.querySelector('div.gs_fl.gs_flb') : null;
                 let citationCount = 0;
                 let pdfUrl = null;
@@ -374,7 +366,6 @@ class ScholarClient:
                         }
                     }
 
-                    // Check for PDF link
                     const pdfLink = footerEl.querySelector('a[href*=".pdf"]') ||
                                    (pdfContainer ? pdfContainer.querySelector('a') : null);
                     if (pdfLink) {
@@ -382,10 +373,8 @@ class ScholarClient:
                     }
                 }
 
-                // Get cluster ID from container attributes
                 const clusterId = container.getAttribute('data-cid') || '';
 
-                // Get scholar URL
                 const scholarUrl = url ? 'https://scholar.google.com/scholar?q=info:' +
                               clusterId + ':scholar.google.com/&output=cite&scirp=0&hl=en' : '';
 
@@ -407,8 +396,7 @@ class ScholarClient:
         """
 
         try:
-            js_results = await tab.evaluate(js_code)
-            actual_results = _extract_js_value(js_results)
+            actual_results = await page.evaluate(js_code)
 
             if not actual_results or not isinstance(actual_results, list):
                 return []
@@ -425,7 +413,6 @@ class ScholarClient:
                 if not title or not url:
                     continue
 
-                # Parse metadata to extract authors, year, venue
                 metadata = r.get('metadata', '')
                 authors, year, venue = self._parse_metadata(metadata)
 
@@ -546,90 +533,97 @@ class ScholarClient:
         all_results: list[ScholarResult] = []
         page_num = 0
 
-        while len(all_results) < max_results:
-            # Build URL for current page
-            url = self._build_search_url(query, page_num, advanced_params)
+        # Start a single browser session to reuse across pages and retries
+        # This avoids launching a new Firefox instance for every page/retry
+        # (old behaviour: one browser per attempt was a severe perf regression).
+        browser = await _create_browser(
+            None,  # proxy selected per attempt below
+            self._config.search.headless,
+        )
+        if browser is None:
+            raise ProxyError("Failed to start browser for Scholar search")
 
-            last_error = None
+        try:
+            while len(all_results) < max_results:
+                # Build URL for current page
+                url = self._build_search_url(query, page_num, advanced_params)
 
-            for attempt in range(1, retry_policy.max_retries + 1):
-                proxy = self._get_random_proxy()
+                last_error = None
 
-                try:
-                    # Fetch page content
-                    browser = await _create_browser(proxy, self._config.search.headless)
-                    if browser is None:
-                        raise ProxyError("Failed to start browser for Scholar search")
+                for attempt in range(1, retry_policy.max_retries + 1):
+                    proxy = self._get_random_proxy()
 
-                    tab = None
+                    # Update proxy on browser for each attempt (or skip if no proxy change)
+                    # Camoufox doesn't support hot-swapping proxy; we navigate with
+                    # whatever proxy was set on the browser. For retry with different
+                    # proxy, we fall through to the retry loop below.
                     try:
-                        tab = await browser.get(url)
+                        page = await _create_page(browser)
+                        await page.goto(url, wait_until="domcontentloaded")
 
                         # Wait for results
                         try:
-                            await tab.select(self.RESULT_CONTAINER_SELECTOR, timeout=15)
+                            await _wait_for_results(page, [self.RESULT_CONTAINER_SELECTOR], timeout=15)
                         except Exception as e:
-                            logger.debug(f"Smart wait for Scholar results timed out: {e}")
+                            logger.debug("Smart wait for Scholar results timed out: %s", e)
                             await asyncio.sleep(2)
 
                         # Check for CAPTCHA
-                        current_url = (tab.url or "").lower()
+                        current_url = (page.url or "").lower()
                         if "sorry/app" in current_url or "/captcha/" in current_url:
-                            from .utils import CaptchaError
                             raise CaptchaError("CAPTCHA detected on Google Scholar")
 
-                        page_content = await tab.get_content()
-                        if _check_captcha(tab.url, page_content):
-                            from .utils import CaptchaError
+                        page_content = await _get_page_html(page)
+                        if _check_captcha(page.url, page_content):
                             raise CaptchaError("CAPTCHA detected on Google Scholar")
 
                         # Parse results
-                        results = await self._parse_results(tab, page_num)
+                        results = await self._parse_results(page, page_num)
 
                         if not results:
                             # No more results available
-                            logger.debug(f"No more Scholar results for page {page_num}")
+                            logger.debug("No more Scholar results for page %s", page_num)
                             return all_results[:max_results]
 
                         all_results.extend(results)
                         logger.info(
-                            f"Scholar search: page {page_num} returned {len(results)} results "
-                            f"for query='{query}'"
+                            "Scholar search: page %s returned %s results for query='%s'",
+                            page_num, len(results), query,
                         )
 
                         break
 
+                    except Exception as e:
+                        last_error = e
+                        if await self._retry_failed(attempt, e, retry_policy):
+                            continue
+                        break
                     finally:
-                        if tab is not None:
-                            try:
-                                await tab.close()
-                            except Exception:
-                                pass
-
                         try:
-                            await _cleanup_browser(browser)
+                            await page.close()
                         except Exception:
                             pass
 
-                except Exception as e:
-                    last_error = e
-                    if await self._retry_failed(attempt, e, retry_policy):
-                        continue
+                if last_error:
+                    logger.warning(
+                        "Failed to fetch Scholar results for query '%s' page %s: %s",
+                        query, page_num, last_error,
+                    )
                     break
 
-            if last_error:
-                logger.warning(
-                    f"Failed to fetch Scholar results for query '{query}' page {page_num}: {last_error}"
-                )
-                break
+                # Move to next page
+                page_num += 1
 
-            # Move to next page
-            page_num += 1
+                # Safety limit to prevent infinite loops
+                if page_num > 100:
+                    logger.warning("Reached maximum page limit (100) for Scholar query '%s'", query)
+                    break
 
-            # Safety limit to prevent infinite loops
-            if page_num > 100:
-                logger.warning(f"Reached maximum page limit (100) for Scholar query '{query}'")
-                break
+        finally:
+            try:
+                await _cleanup_browser(browser)
+            except Exception:
+                pass
 
         return all_results[:max_results]
 

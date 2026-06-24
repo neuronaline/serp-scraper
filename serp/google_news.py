@@ -17,7 +17,7 @@ For article content extraction (get_news_with_content):
    - Converts to Markdown via markdownify
    - Advantages: Low resource usage, fast execution
 
-2. FALLBACK: Browser-based (nodriver)
+2. FALLBACK: Browser-based (Camoufox)
    - Invoked only when BS4 fetch fails or returns unusable content
    - Handles JavaScript-rendered pages, anti-bot measures
    - Higher resource usage but more reliable
@@ -809,7 +809,7 @@ class GoogleNewsClient:
             return markdown
 
     async def _fetch_article_browser(self, url: str) -> str:
-        """Fetch article using nodriver browser.
+        """Fetch article using Camoufox browser.
 
         Args:
             url: Article URL to fetch
@@ -828,15 +828,15 @@ class GoogleNewsClient:
         if browser is None:
             raise ProxyError("Failed to start browser for article fetch")
 
-        tab = None
         try:
-            tab = await browser.get(url)
-            await tab.wait(3)  # Wait for JS to execute
+            page = browser._serp_page
+            await page.goto(url, wait_until="domcontentloaded")
+            await asyncio.sleep(3)  # Wait for JS to execute
 
-            page_content = await tab.get_content()
+            page_content = await page.content()
 
             # Check for CAPTCHA
-            current_url = (tab.url or "").lower()
+            current_url = (page.url or "").lower()
             if "sorry/app" in current_url or "/captcha/" in current_url:
                 from .utils import CaptchaError
                 raise CaptchaError("CAPTCHA detected")
@@ -854,12 +854,6 @@ class GoogleNewsClient:
             return markdown
 
         finally:
-            if tab is not None:
-                try:
-                    await tab.close()
-                except Exception:
-                    pass
-
             try:
                 await _cleanup_browser(browser)
             except Exception:

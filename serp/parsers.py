@@ -1,19 +1,32 @@
-"""SERP parsing logic for Google and Bing using nodriver."""
+"""SERP parsing logic for Google and Bing using Camoufox (Firefox/Gecko).
+
+This module replaces the previous nodriver-based implementation with
+Camoufox, which provides C++-level BrowserForge fingerprint spoofing
+and a Playwright-compatible API.
+
+Key changes from nodriver:
+- ``uc.start()`` → ``AsyncCamoufox(os="windows", ...)`` context manager
+- ``uc.Tab.evaluate()`` → Playwright ``page.evaluate()`` (returns plain values)
+- ``uc.Tab.get_content()`` → ``page.content()``
+- ``uc.Tab.select()`` → ``page.wait_for_selector()``
+- ``uc.Tab.close()`` → ``page.close()``
+"""
 
 import asyncio
-import shutil
-import tempfile
+import warnings
+from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import quote, urlparse
 
 import markdownify
-import nodriver as uc
+from camoufox.async_api import AsyncCamoufox
 
 from .browser_stealth import (
     DEFAULT_FINGERPRINT,
+    WIN10_FONTS,
     FingerprintProfile,
     apply_stealth,
-    build_chrome_flags,
-    inject_webrtc_prefs,
+    build_firefox_prefs,
 )
 from .cleaning import clean_html, clean_markdown
 from .config import BING_URL_TEMPLATE
@@ -21,20 +34,156 @@ from .utils import (
     CaptchaError,
     PageTimeoutError,
     ParseError,
-    VirtualScreenRequiredError,
-    _build_chrome_proxy_arg,
     _extract_bing_real_url,
     logger,
     require_virtual_display,
 )
-from nodriver.cdp.runtime import RemoteObject
-from nodriver.cdp.fetch import (
-    enable as fetch_enable,
-    AuthRequired,
-    continue_with_auth,
-    AuthChallengeResponse,
-    RequestPaused,
+
+# ── Suppress Camoufox's "Disabling OS-specific fonts" warning ──────────
+warnings.filterwarnings(
+    "ignore",
+    message="Disabling OS-specific fonts while spoofing your OS",
 )
+
+# ── Fontconfig isolation ────────────────────────────────────────────────
+# Camoufox's bundled fonts.conf contains implicit <include> tags that
+# load the host OS's /etc/fonts configuration, leaking Linux fonts
+# (Cantarell) into Gecko's rendering pipeline.
+#
+# We apply the same surgical monkeypatch + sterile XML approach from
+# isolated_browser to prevent font leaks.
+#
+# NOTE: The monkeypatch and fonts.conf file write are deferred to
+# _init_fontconfig(), which is called from _create_browser().
+# This avoids module-level side effects.  The fonts_windows.conf file
+# is written fresh each time the browser starts, so the hardcoded
+# absolute path is resolved dynamically.
+
+import camoufox.utils as _camoufox_utils  # noqa: E402
+
+_FONTCONFIG_INITIALIZED = False
+
+
+def _init_fontconfig() -> None:
+    """Monkey-patch camoufox get_env_vars and write sterile fonts.conf.
+
+    Safe to call multiple times — the monkey-patch and file write are only
+    applied on the first invocation.
+    """
+    global _FONTCONFIG_INITIALIZED
+    if _FONTCONFIG_INITIALIZED:
+        return
+
+    # ── Monkey-patch camoufox.utils.get_env_vars ─────────────────────
+    _orig_get_env_vars = _camoufox_utils.get_env_vars
+
+    def _patched_get_env_vars(config_map: dict, user_agent_os: str) -> dict:
+        env = _orig_get_env_vars(config_map, user_agent_os)
+
+        _target_dir = Path(__file__).resolve().parent.parent / "data" / "fontconfig"
+        _target_conf = _target_dir / "fonts_windows.conf"
+
+        _target_dir.mkdir(parents=True, exist_ok=True)
+        (_target_dir / "cache").mkdir(parents=True, exist_ok=True)
+
+        env["FONTCONFIG_PATH"] = str(_target_dir.resolve())
+        env["FONTCONFIG_FILE"] = str(_target_conf.resolve())
+
+        return env
+
+    _camoufox_utils.get_env_vars = _patched_get_env_vars
+
+    # ── Write sterile fonts.conf ──────────────────────────────────────
+    try:
+        from camoufox.pkgman import camoufox_path
+
+        base = Path(camoufox_path()).resolve()
+        font_dir = base / "fonts" / "windows"
+
+        if not font_dir.is_dir():
+            logger.warning(
+                "Bundled font dir not found at %s — cannot isolate fontconfig",
+                font_dir,
+            )
+            _FONTCONFIG_INITIALIZED = True
+            return
+
+        target_dir = Path(__file__).resolve().parent.parent / "data" / "fontconfig"
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        sterile_xml = f"""<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
+<fontconfig>
+  <!-- Force fontconfig to ignore and wipe out all compiled-in host system directories -->
+  <reset-dirs />
+
+  <!-- Only load our Windows fonts -->
+  <dir>{font_dir.as_posix()}</dir>
+
+  <!-- Cache directory isolated to our path -->
+  <cachedir>{(target_dir / "cache").as_posix()}</cachedir>
+
+  <!-- Strict generic fallback mappings directly to Windows fonts -->
+  <match target="pattern">
+    <test qual="any" name="family"><string>sans-serif</string></test>
+    <edit name="family" mode="assign" binding="same"><string>Arial</string></edit>
+  </match>
+  <match target="pattern">
+    <test qual="any" name="family"><string>serif</string></test>
+    <edit name="family" mode="assign" binding="same"><string>Times New Roman</string></edit>
+  </match>
+  <match target="pattern">
+    <test qual="any" name="family"><string>monospace</string></test>
+    <edit name="family" mode="assign" binding="same"><string>Consolas</string></edit>
+  </match>
+  <match target="pattern">
+    <test qual="any" name="family"><string>system-ui</string></test>
+    <edit name="family" mode="assign" binding="same"><string>Segoe UI</string></edit>
+  </match>
+</fontconfig>"""
+
+        target_conf = target_dir / "fonts_windows.conf"
+        target_conf.write_text(sterile_xml, encoding="utf-8")
+
+        logger.info(
+            "Fontconfig isolated — using %s (fonts dir: %s)",
+            target_conf,
+            font_dir,
+        )
+    except Exception as exc:
+        logger.warning("Fontconfig isolation failed: %s — host fonts may leak", exc)
+
+    _FONTCONFIG_INITIALIZED = True
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Page creation helper
+# ─────────────────────────────────────────────────────────────────────────
+
+
+async def _create_page(browser) -> Any:
+    """Create a new page on an existing browser and apply stealth init scripts.
+
+    This replaces the old ``_serp_page`` approach — each navigation gets its own
+    page, which eliminates race conditions when using the browser concurrently.
+
+    Args:
+        browser: A Playwright ``Browser`` returned by ``_create_browser()``.
+
+    Returns:
+        A Playwright ``Page`` with stealth init scripts pre-registered.
+    """
+    fp = getattr(browser, "_serp_fingerprint", DEFAULT_FINGERPRINT)
+    page = await browser.new_page()
+    # Note: proxy_ip is intentionally "0.0.0.0" to avoid leaking the real IP.
+    # The WebRTC spoof replaces public IPs; an empty string would delete them.
+    await apply_stealth(page, fp, proxy_ip="0.0.0.0")
+    return page
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# CAPTCHA detection
+# ─────────────────────────────────────────────────────────────────────────
 
 
 def _check_captcha(url: str, page_source: str = "") -> bool:
@@ -50,259 +199,177 @@ def _check_captcha(url: str, page_source: str = "") -> bool:
     ]
     content_lower = page_source.lower()
     has_captcha_content = any(pattern in content_lower for pattern in captcha_patterns)
-    # Only flag as captcha if it's an actual captcha service with evidence of a challenge
     has_captcha_iframe = 'id="captcha"' in content_lower or 'class="captcha"' in content_lower
     has_explicit_captcha = (
-        # Strict check: explicit captcha service with challenge evidence
         ("recaptcha" in content_lower and ("g-recaptcha" in content_lower or "google.com/recaptcha" in content_lower))
         or ("hcaptcha" in content_lower and ("h-captcha" in content_lower or "hcaptcha.com" in content_lower))
         or "cf-challenge" in content_lower
-        # Fallback: any mention of captcha services (catches simple text mentions)
         or "recaptcha" in content_lower
         or "hcaptcha" in content_lower
     )
     return has_captcha_content or has_explicit_captcha or has_captcha_iframe
 
 
-def _find_system_chrome_path() -> Optional[str]:
-    """Find system Chrome/Chromium executable path.
-
-    Checks common installation paths and returns the first valid one found.
-    Snap chromium is avoided due to proxy configuration limitations.
-    """
-    import os
-    import subprocess
-
-    # Order matters: prefer Google Chrome over system Chromium
-    # Also check CHROME_PATH env var if set
-    chrome_path = os.environ.get("CHROME_PATH")
-    if chrome_path and os.path.isfile(chrome_path) and os.access(chrome_path, os.X_OK):
-        return chrome_path
-
-    # Common Chrome/Chromium installation paths
-    candidates = [
-        "/usr/bin/google-chrome",
-        "/usr/bin/google-chrome-stable",
-        "/usr/bin/chromium",
-        "/usr/bin/chromium-browser",
-        "/opt/google/chrome/chrome",
-        # Snap paths (not recommended but check last)
-        "/snap/bin/chromium",
-    ]
-
-    for path in candidates:
-        if os.path.isfile(path) and os.access(path, os.X_OK):
-            if "/snap/" in path:
-                logger.warning(
-                    f"Snap Chromium detected at {path}. "
-                    "Snap browsers may not honor proxy settings properly. "
-                    "Set CHROME_PATH to a system Chrome/Chromium path to suppress this warning."
-                )
-            return path
-
-    return None
+# ─────────────────────────────────────────────────────────────────────────
+# Browser creation
+# ─────────────────────────────────────────────────────────────────────────
 
 
 async def _create_browser(
     proxy: Optional[dict] = None,
     headless: bool = False,
     fingerprint: Optional[FingerprintProfile] = None,
-) -> Optional[uc.Browser]:
-    """Create and return a nodriver browser instance with full stealth applied.
+) -> Any:
+    """Create and return a Camoufox browser instance with full stealth applied.
 
-    Applies the full anti-detection stack from ``browser_stealth``:
-
-    1. ``FingerprintProfile`` (or default) used for consistent spoofing signals.
-    2. Anti-detect Chrome flags from §3.
-    3. WebRTC preferences injected into the user-data dir *before* startup (Layer 1 of 3).
-    4. CDP fingerprint overrides + three JS stealth scripts injected *after* startup.
-
-    Proxy credentials are **not** embedded in ``--proxy-server`` (Chrome does
-    not support it).  Authentication is handled via ``CDP Fetch.authRequired``
-    in ``_setup_proxy_auth()``.
+    Uses Camoufox (Firefox/Gecko) with BrowserForge C++ level fingerprinting
+    and JS safety net injection.
 
     Args:
         proxy: Proxy dict with ``server``, ``username``, ``password`` keys.
-        headless: Run Chrome in headless mode (default: ``False``).
-        fingerprint: Optional ``FingerprintProfile``; if ``None`` the global
-            ``DEFAULT_FINGERPRINT`` is used.
+        headless: Run in headless mode (default: ``False``).
+        fingerprint: Optional ``FingerprintProfile``; uses ``DEFAULT_FINGERPRINT`` if None.
 
     Returns:
-        A ``nodriver.Browser`` instance, or ``None`` if startup fails.
+        A Playwright ``Browser`` instance, or ``None`` if startup fails.
     """
-    fp = fingerprint or DEFAULT_FINGERPRINT
+    # Initialize fontconfig isolation (idempotent — runs once)
+    _init_fontconfig()
 
-    # Non-headless mode requires a virtual display
+    # Virtual display check for non-headless mode
     if not headless:
         require_virtual_display()
 
-    # Build anti-detect Chrome flags (§3)
-    browser_args = build_chrome_flags(fp)
+    fp = fingerprint or DEFAULT_FINGERPRINT
 
-    # Add proxy flag (§3.5)
+    # Build Camoufox launch options
+    window = (fp.screen_width, fp.screen_height)
+
+    # Proxy settings
+    proxy_settings = None
     if proxy:
-        proxy_arg = _build_chrome_proxy_arg(proxy)
-        if proxy_arg:
-            browser_args.append(f"--proxy-server={proxy_arg}")
-            logger.debug(f"Proxy configured (auth via CDP): {proxy_arg}")
+        server = proxy.get("server", "")
+        username = proxy.get("username")
+        password = proxy.get("password")
+        if username and password:
+            # Build authenticated proxy URL for Playwright with URL-encoded credentials
+            parsed = urlparse(server)
+            scheme = parsed.scheme or "http"
+            hostname = parsed.hostname or ""
+            port_str = f":{parsed.port}" if parsed.port else ""
+            encoded_user = quote(username, safe="")
+            encoded_pass = quote(password, safe="")
+            server = f"{scheme}://{encoded_user}:{encoded_pass}@{hostname}{port_str}"
+
+        proxy_settings = {"server": server}
+
+    # Firefox user preferences for Windows spoofing
+    firefox_user_prefs = build_firefox_prefs()
 
     try:
-        import os
-
-        sandbox = os.geteuid() != 0  # True = sandbox enabled (non-root)
-        browser_executable = _find_system_chrome_path()
-
-        # Create a temporary user-data dir so we can inject WebRTC prefs (§7 Layer 1)
-        # before Chrome reads them on startup.
-        user_data_dir = tempfile.mkdtemp(prefix="serp_chrome_")
-
-        # §7 Layer 1: WebRTC prefs injected BEFORE Chrome starts
-        inject_webrtc_prefs(user_data_dir)
-
-        browser = await uc.start(
+        camoufox = AsyncCamoufox(
+            os="windows",
+            window=window,
+            proxy=proxy_settings,
+            humanize=False,
+            disable_coop=True,
+            geoip=False,
+            block_images=False,
+            block_webrtc=False,
+            fonts=WIN10_FONTS,
+            custom_fonts_only=True,
+            i_know_what_im_doing=True,
+            firefox_user_prefs=firefox_user_prefs,
             headless=headless,
-            browser_args=browser_args,
-            sandbox=sandbox,
-            browser_executable_path=browser_executable,
-            user_data_dir=user_data_dir,
         )
 
-        # Store user_data_dir on the browser for cleanup in _cleanup_browser()
-        browser._serp_user_data_dir = user_data_dir
-
-        # §5 + §4 + §6 + §7 Layer 3: CDP fingerprint + JS stealth injection
-        await apply_stealth(browser, fp)
-
-        return browser
-    except Exception as e:
-        logger.error(f"Failed to start browser: {e}")
-        # Clean up the temporary user-data dir if it was created
-        try:
-            shutil.rmtree(user_data_dir, ignore_errors=True)
-        except Exception:
-            pass
-        return None
-
-
-async def _setup_proxy_auth(
-    tab: uc.Tab,
-    proxy: dict,
-) -> None:
-    """Set up CDP-based proxy authentication on a tab.
-
-    Chrome's --proxy-server flag does not support embedded credentials.
-    Instead, we enable the Fetch domain to intercept 407 Proxy Auth
-    Required challenges and respond with the stored credentials.
-
-    Must be called BEFORE navigating to a URL that requires proxy auth.
-
-    Args:
-        tab: nodriver Tab to set up auth on (typically about:blank)
-        proxy: Proxy dict with 'username' and 'password' keys
-    """
-    username = proxy.get("username")
-    password = proxy.get("password")
-    if not username or not password:
-        return  # Nothing to set up
-
-    async def _on_auth_required(event: AuthRequired) -> None:
-        """Respond to proxy auth challenge with credentials."""
-        logger.debug(f"AuthRequired event: {event}")
-        await tab.send(continue_with_auth(
-            request_id=event.request_id,
-            auth_challenge_response=AuthChallengeResponse(
-                response="ProvideCredentials",
-                username=username,
-                password=password,
-            ),
-        ))
-
-    # Enable Fetch domain with auth request handling
-    # handle_auth_requests=True makes Chrome pause on auth challenges and fire AuthRequired
-    await tab.send(fetch_enable(handle_auth_requests=True))
-    tab.add_handler(AuthRequired, _on_auth_required)
-
-    logger.debug(
-        f"CDP proxy auth handler registered for "
-        f"{username[:8]}... on tab {tab.target.target_id[:8]}"
-    )
-
-
-def _extract_js_value(obj) -> Any:
-    """Extract actual value from nodriver CDP serialized objects.
-
-    CDP serializes complex objects in a specific format that needs to be
-    unpacked to get actual Python values.
-    """
-    if obj is None:
-        return None
-
-    # If it's a RemoteObject, extract from it
-    if isinstance(obj, RemoteObject):
-        if obj.deep_serialized_value and hasattr(obj.deep_serialized_value, 'value'):
-            obj = obj.deep_serialized_value.value
-        elif obj.value is not None:
-            obj = obj.value
-        else:
+        browser = await camoufox.__aenter__()
+        if browser is None:
+            logger.error("AsyncCamoufox.__aenter__() returned None")
             return None
 
-    # If it's a list (array result), process each element
-    if isinstance(obj, list):
-        result = []
-        for item in obj:
-            if isinstance(item, dict) and item.get('type') == 'object' and 'value' in item:
-                # CDP object: [[key, {type, value}], ...]
-                dict_result = {}
-                for pair in item['value']:
-                    if isinstance(pair, list) and len(pair) == 2:
-                        key, val = pair
-                        dict_result[key] = _extract_js_value(val)
-                result.append(dict_result)
-            elif isinstance(item, dict):
-                # CDP primitive wrapped in dict
-                result.append(_extract_js_value(item))
-            else:
-                result.append(item)
-        return result
+        # Store the AsyncCamoufox context manager and fingerprint for cleanup/page creation
+        browser._serp_camoufox = camoufox
+        browser._serp_fingerprint = fp
 
-    # If it's a CDP serialized primitive
-    if isinstance(obj, dict):
-        if obj.get('type') == 'number':
-            return obj.get('value')
-        elif obj.get('type') == 'string':
-            return obj.get('value')
-        elif obj.get('type') == 'boolean':
-            return obj.get('value')
-        elif obj.get('type') == 'object' and 'value' in obj:
-            # Nested CDP object
-            return obj.get('value')
+        logger.debug(
+            "Camoufox browser started — window=%dx%d, proxy=%s, headless=%s",
+            fp.screen_width, fp.screen_height,
+            bool(proxy), headless,
+        )
+        return browser
 
-    # Already a plain value (string, number, boolean, etc.)
-    if isinstance(obj, (str, int, float, bool)):
-        return obj
-
-    return obj
+    except Exception as e:
+        logger.error("Failed to start Camoufox browser: %s", e)
+        return None
 
 
-async def _parse_google_results(tab: uc.Tab, page_num: int) -> list[dict[str, Any]]:
+# ─────────────────────────────────────────────────────────────────────────
+# Smart wait helper
+# ─────────────────────────────────────────────────────────────────────────
+
+
+async def _wait_for_results(page: Any, selectors: list[str], timeout: int = 10) -> bool:
+    """Wait for any of the given CSS selectors to appear on the page.
+
+    Args:
+        page: Playwright Page.
+        selectors: List of CSS selector strings.
+        timeout: Timeout in seconds for each selector attempt.
+
+    Returns:
+        True if any selector matched, False if all timed out.
+    """
+    for sel in selectors:
+        try:
+            await page.wait_for_selector(sel, timeout=timeout * 1000)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Page content / HTML helper
+# ─────────────────────────────────────────────────────────────────────────
+
+
+async def _get_page_html(page: Any) -> str:
+    """Get the full page HTML content.
+
+    Uses ``page.content()`` which returns the complete DOM as HTML.
+    """
+    try:
+        return await page.content()
+    except Exception as e:
+        logger.debug("Failed to get page content: %s", e)
+        return ""
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Google results parsing
+# ─────────────────────────────────────────────────────────────────────────
+
+
+async def _parse_google_results(page: Any, page_num: int) -> list[dict[str, Any]]:
     """Parse Google search results using JavaScript evaluation.
 
     Polls for results with increasing delays to handle slow-rendering pages.
-    This significantly reduces intermittent "no results" errors when the DOM
-    hasn't finished populating before the first parse attempt.
+
+    Args:
+        page: Playwright Page with loaded Google search results.
+        page_num: Current page number (1-based).
+
+    Returns:
+        List of result dicts with rank, title, url, description.
     """
     js_code = """
     (function() {
         const results = [];
-        // Combined selector: try all known result container patterns (union).
-        // div[data-hveid] is a broad fallback that catches many Google containers
-        // including non-organic sections; those are filtered out below.
         const items = document.querySelectorAll(
             'div.g, div#rso > div, div.MjjYud, div[data-hveid]'
         );
         items.forEach((item, idx) => {
-            // Skip items inside known non-organic sections (e.g., "People also ask",
-            // knowledge panels, image packs, related searches).
             if (item.closest('#botstuff, [data-attrid], .kno-kp, .related-question-pair')) return;
 
             const h3 = item.querySelector('h3');
@@ -330,14 +397,13 @@ async def _parse_google_results(tab: uc.Tab, page_num: int) -> list[dict[str, An
 
     # Poll for results with increasing delays (0.5s, 1s, 2s, 3s)
     max_parse_attempts = 4
-    seen_urls = set()
-    results = []
+    seen_urls: set[str] = set()
+    results: list[dict[str, Any]] = []
     base_rank = (page_num - 1) * 10
 
     for parse_attempt in range(1, max_parse_attempts + 1):
         try:
-            js_results = await tab.evaluate(js_code)
-            actual_results = _extract_js_value(js_results)
+            actual_results = await page.evaluate(js_code)
 
             if actual_results and isinstance(actual_results, list):
                 seen_urls.clear()
@@ -346,42 +412,51 @@ async def _parse_google_results(tab: uc.Tab, page_num: int) -> list[dict[str, An
                 for idx, r in enumerate(actual_results):
                     if not isinstance(r, dict):
                         continue
-                    url = r.get('url', '')
-                    title = r.get('title', '')
+                    url = r.get("url", "")
+                    title = r.get("title", "")
                     if not title or not url or url in seen_urls:
                         continue
                     seen_urls.add(url)
                     results.append({
-                        'rank': base_rank + idx + 1,
-                        'title': title,
-                        'url': url,
-                        'description': r.get('description', '')
+                        "rank": base_rank + idx + 1,
+                        "title": title,
+                        "url": url,
+                        "description": r.get("description", ""),
                     })
 
             if results:
-                logger.debug(f"Google parse succeeded on attempt {parse_attempt} ({len(results)} results)")
+                logger.debug("Google parse succeeded on attempt %d (%d results)", parse_attempt, len(results))
                 return results
 
             if parse_attempt < max_parse_attempts:
-                delay = 0.5 * (2 ** (parse_attempt - 1))  # 0.5, 1.0, 2.0
-                logger.debug(f"Google parse attempt {parse_attempt} returned 0 results, "
-                             f"retrying in {delay:.1f}s...")
+                delay = 0.5 * (2 ** (parse_attempt - 1))
+                logger.debug("Google parse attempt %d returned 0 results, retrying in %.1fs...", parse_attempt, delay)
                 await asyncio.sleep(delay)
 
         except Exception as e:
             if parse_attempt < max_parse_attempts:
-                logger.debug(f"Google parse attempt {parse_attempt} failed: {e}, retrying...")
+                logger.debug("Google parse attempt %d failed: %s, retrying...", parse_attempt, e)
                 await asyncio.sleep(0.5 * (2 ** (parse_attempt - 1)))
             else:
-                logger.error(f"Failed to parse Google results after {max_parse_attempts} attempts: {e}")
+                logger.error("Failed to parse Google results after %d attempts: %s", max_parse_attempts, e)
 
     return []
 
 
-async def _parse_bing_results(tab: uc.Tab, page_num: int) -> list[dict[str, Any]]:
+# ─────────────────────────────────────────────────────────────────────────
+# Bing results parsing
+# ─────────────────────────────────────────────────────────────────────────
+
+
+async def _parse_bing_results(page: Any, page_num: int) -> list[dict[str, Any]]:
     """Parse Bing search results using JavaScript evaluation.
 
-    Polls for results with increasing delays to handle slow-rendering pages.
+    Args:
+        page: Playwright Page with loaded Bing search results.
+        page_num: Current page number (1-based).
+
+    Returns:
+        List of result dicts with rank, title, url, description.
     """
     js_code = """
     (function() {
@@ -411,16 +486,14 @@ async def _parse_bing_results(tab: uc.Tab, page_num: int) -> list[dict[str, Any]
     })()
     """
 
-    # Poll for results with increasing delays (0.5s, 1s, 2s, 3s)
     max_parse_attempts = 4
-    seen_urls = set()
-    results = []
+    seen_urls: set[str] = set()
+    results: list[dict[str, Any]] = []
     base_rank = (page_num - 1) * 10
 
     for parse_attempt in range(1, max_parse_attempts + 1):
         try:
-            js_results = await tab.evaluate(js_code)
-            actual_results = _extract_js_value(js_results)
+            actual_results = await page.evaluate(js_code)
 
             if actual_results and isinstance(actual_results, list):
                 seen_urls.clear()
@@ -429,45 +502,46 @@ async def _parse_bing_results(tab: uc.Tab, page_num: int) -> list[dict[str, Any]
                 for idx, r in enumerate(actual_results):
                     if not isinstance(r, dict):
                         continue
-                    url = r.get('url', '')
-                    # Extract real URL from Bing redirect URLs
+                    url = r.get("url", "")
                     original_url = url
                     url = _extract_bing_real_url(url)
                     if original_url != url:
-                        logger.debug(f"Resolved Bing redirect: {original_url[:50]}... -> {url[:50]}...")
+                        logger.debug("Resolved Bing redirect: %s... -> %s...", original_url[:50], url[:50])
                     elif "bing.com/ck/a" in original_url:
-                        logger.warning(
-                            f"Failed to extract real URL from Bing redirect: {original_url[:50]}..."
-                        )
-                    title = r.get('title', '')
+                        logger.warning("Failed to extract real URL from Bing redirect: %s...", original_url[:50])
+                    title = r.get("title", "")
                     if not title or not url or url in seen_urls:
                         continue
                     seen_urls.add(url)
                     results.append({
-                        'rank': base_rank + idx + 1,
-                        'title': title,
-                        'url': url,
-                        'description': r.get('description', '')
+                        "rank": base_rank + idx + 1,
+                        "title": title,
+                        "url": url,
+                        "description": r.get("description", ""),
                     })
 
             if results:
-                logger.debug(f"Bing parse succeeded on attempt {parse_attempt} ({len(results)} results)")
+                logger.debug("Bing parse succeeded on attempt %d (%d results)", parse_attempt, len(results))
                 return results
 
             if parse_attempt < max_parse_attempts:
-                delay = 0.5 * (2 ** (parse_attempt - 1))  # 0.5, 1.0, 2.0
-                logger.debug(f"Bing parse attempt {parse_attempt} returned 0 results, "
-                             f"retrying in {delay:.1f}s...")
+                delay = 0.5 * (2 ** (parse_attempt - 1))
+                logger.debug("Bing parse attempt %d returned 0 results, retrying in %.1fs...", parse_attempt, delay)
                 await asyncio.sleep(delay)
 
         except Exception as e:
             if parse_attempt < max_parse_attempts:
-                logger.debug(f"Bing parse attempt {parse_attempt} failed: {e}, retrying...")
+                logger.debug("Bing parse attempt %d failed: %s, retrying...", parse_attempt, e)
                 await asyncio.sleep(0.5 * (2 ** (parse_attempt - 1)))
             else:
-                logger.error(f"Failed to parse Bing results after {max_parse_attempts} attempts: {e}")
+                logger.error("Failed to parse Bing results after %d attempts: %s", max_parse_attempts, e)
 
     return []
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Search implementation
+# ─────────────────────────────────────────────────────────────────────────
 
 
 async def _search_impl(
@@ -477,7 +551,23 @@ async def _search_impl(
     headless: bool = False,
     source: str = "google",
 ) -> list[dict[str, Any]]:
-    """Async search implementation using nodriver browser."""
+    """Async search implementation using Camoufox browser.
+
+    Args:
+        query: Search query string.
+        page_num: Page number (1-based).
+        proxy: Optional proxy dict.
+        headless: Run browser in headless mode.
+        source: Search engine — "google" or "bing".
+
+    Returns:
+        List of result dicts.
+
+    Raises:
+        ParseError: If browser fails to start.
+        CaptchaError: If CAPTCHA is detected.
+        PageTimeoutError: If page load fails.
+    """
     if source == "bing":
         offset = (page_num - 1) * 10 + 1
         url = BING_URL_TEMPLATE.format(query=query, offset=offset)
@@ -487,72 +577,58 @@ async def _search_impl(
         url = f"https://www.google.com/search?q={query}&start={start}&hl=en&gl=us&lr=lang_en"
         captcha_msg = "CAPTCHA detected on Google"
 
-    logger.debug(f"Navigating to {source}: {url}")
+    logger.debug("Navigating to %s: %s", source, url)
 
     browser = await _create_browser(proxy, headless)
     if browser is None:
-        raise ParseError("Failed to start browser - nodriver may not be properly installed")
+        raise ParseError("Failed to start browser — Camoufox may not be properly installed")
 
-    tab = None
     try:
-        # Navigate directly to the search URL
-        # Proxy (if configured) is passed via --proxy-server to Chrome
-        tab = await browser.get(url)
+        page = await _create_page(browser)
 
-        # Smart wait: wait for search results (or CAPTCHA page) to actually appear
-        # Instead of a fixed sleep, we wait for known DOM elements to materialize.
-        # This handles slow proxies/connections gracefully without a hardcoded limit.
-        # Multiple selector sets are tried as fallback to handle DOM structure changes.
+        # Navigate to the search URL
+        try:
+            await page.goto(url, wait_until="domcontentloaded")
+        except Exception as e:
+            logger.debug("Navigation to %s failed: %s", url, e)
+            raise PageTimeoutError(f"Failed to navigate to {source}") from e
+
+        # Smart wait: wait for search results (or CAPTCHA page) to appear
         try:
             if source == "bing":
-                # Bing wraps results in li.b_algo elements
-                for bing_sel in ["li.b_algo", "#b_results", "ol#b_results"]:
-                    try:
-                        await tab.select(bing_sel, timeout=8)
-                        break
-                    except Exception:
-                        continue
-                # Extra short wait for Bing to finish rendering all results
+                await _wait_for_results(page, ["li.b_algo", "#b_results", "ol#b_results"], timeout=8)
                 await asyncio.sleep(1)
             else:
-                # Google wraps results in div.g / div#rso elements
-                # Try multiple selector variations to handle DOM changes
-                for google_sel in ["div.g", "div#rso > div", "div.MjjYud", "div[data-hveid]"]:
-                    try:
-                        await tab.select(google_sel, timeout=8)
-                        break
-                    except Exception:
-                        continue
+                await _wait_for_results(page, ["div.g", "div#rso > div", "div.MjjYud", "div[data-hveid]"], timeout=8)
         except Exception as e:
-            logger.debug(f"Smart wait for {source} results timed out: {e}")
-            # Fallback: small extra wait before checking for errors/CAPTCHA
+            logger.debug("Smart wait for %s results timed out: %s", source, e)
             await asyncio.sleep(2)
 
-        # Check for CAPTCHA / error pages (check both URL and page content)
-        current_url = (tab.url or "").lower()
+        # Check for CAPTCHA / error pages
+        current_url = (page.url or "").lower()
         if "sorry/app" in current_url or "/captcha/" in current_url:
             raise CaptchaError(captcha_msg)
 
-        if not tab.url or tab.url == "about:blank":
-            raise PageTimeoutError("Failed to navigate - page did not load")
+        if not page.url or page.url == "about:blank":
+            raise PageTimeoutError("Failed to navigate — page did not load")
 
         # Check page content for CAPTCHA or blocking patterns
         try:
-            page_html = await tab.get_content()
-            if _check_captcha(tab.url, page_html):
+            page_html = await _get_page_html(page)
+            if _check_captcha(page.url, page_html):
                 raise CaptchaError(captcha_msg)
         except CaptchaError:
             raise
         except Exception:
-            pass  # if content retrieval fails, proceed anyway
+            pass
 
         # Parse results
         if source == "bing":
-            results = await _parse_bing_results(tab, page_num)
+            results = await _parse_bing_results(page, page_num)
         else:
-            results = await _parse_google_results(tab, page_num)
+            results = await _parse_google_results(page, page_num)
 
-        logger.debug(f"Parsed {len(results)} results from {source}")
+        logger.debug("Parsed %d results from %s", len(results), source)
 
         if not results:
             raise ParseError(f"No results found for query '{query}' on {source} page {page_num}")
@@ -562,61 +638,38 @@ async def _search_impl(
     except (CaptchaError, PageTimeoutError, ParseError):
         raise
     except Exception as e:
-        logger.warning(f"Search failed: {type(e).__name__}: {e}")
+        logger.warning("Search failed: %s: %s", type(e).__name__, e)
         raise ParseError(str(e)) from e
     finally:
-        # Clean up tab first, then browser
-        if tab is not None:
-            try:
-                await tab.close()
-            except Exception:
-                pass
-            tab = None
-
-        # Cancel background tasks and stop browser cleanly
+        # Clean up browser
         try:
             await _cleanup_browser(browser)
         except Exception:
             pass
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# Browser cleanup
+# ─────────────────────────────────────────────────────────────────────────
+
+
 async def _cleanup_browser(browser) -> None:
-    """Cancel nodriver background tasks and stop browser cleanly.
-
-    Nodriver runs internal background tasks (e.g., update_targets) that can
-    produce "Task exception was never retrieved" warnings if not properly
-    cancelled before browser.stop(). This is a known issue with nodriver's
-    CDP connection management.
-
-    Task attribute names (_idle, _update_task) are private API - iterate
-    over known names to future-proof against nodriver version changes.
-    """
+    """Stop Camoufox browser and clean up resources."""
     if browser is None:
         return
 
-    # Known nodriver internal task attribute names
-    task_attr_names = ('_idle', '_update_task')
-
-    for attr_name in task_attr_names:
-        task = getattr(browser, attr_name, None)
-        if task:
-            task.cancel()
-            try:
-                await asyncio.wait_for(asyncio.shield(task), timeout=0.5)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                pass
-
-    await asyncio.sleep(0.25)
-    browser.stop()
-
-    # Clean up temporary user-data directory (created in _create_browser)
-    user_data_dir = getattr(browser, '_serp_user_data_dir', None)
-    if user_data_dir:
+    # Exit the AsyncCamoufox context manager (this handles browser.close())
+    camoufox = getattr(browser, "_serp_camoufox", None)
+    if camoufox is not None:
         try:
-            shutil.rmtree(user_data_dir, ignore_errors=True)
-            logger.debug(f"Cleaned up temp user-data dir: {user_data_dir}")
-        except Exception as exc:
-            logger.warning(f"Failed to clean up temp dir {user_data_dir}: {exc}")
+            await camoufox.__aexit__(None, None, None)
+        except Exception:
+            pass
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Browser-based page fetch
+# ─────────────────────────────────────────────────────────────────────────
 
 
 async def _fetch_browser_impl(
@@ -624,39 +677,47 @@ async def _fetch_browser_impl(
     proxy: Optional[dict] = None,
     headless: bool = False,
 ) -> str:
-    """Async browser fetch implementation using nodriver.
+    """Async browser fetch implementation using Camoufox.
 
-    Ensures the page is fully loaded before retrieving content. This includes:
-    1. Navigation to the target URL
-    2. Waiting for the page load event to fire
-    3. Additional wait time for JavaScript to execute and render content
-    4. Verification that the page loaded successfully
+    Navigates to the URL, waits for the page to load, and returns the
+    content as cleaned Markdown.
+
+    Args:
+        url: Target URL to fetch.
+        proxy: Optional proxy dict.
+        headless: Run browser in headless mode.
+
+    Returns:
+        Page content as Markdown string.
+
+    Raises:
+        ParseError: If browser fails to start.
+        PageTimeoutError: If page load fails.
+        CaptchaError: If CAPTCHA is detected.
     """
     browser = await _create_browser(proxy, headless)
     if browser is None:
-        raise ParseError("Failed to start browser - nodriver may not be properly installed")
+        raise ParseError("Failed to start browser — Camoufox may not be properly installed")
 
-    tab = None
     try:
-        # Navigate directly - proxy is configured via --proxy-server
-        tab = await browser.get(url)
+        page = await _create_page(browser)
 
-        # Wait for page to fully load before accessing content.
-        # "load" event fires when all resources (scripts, stylesheets, images)
-        # have been fully downloaded and processed.
-        await tab.wait("load")
+        # Navigate to the target URL
+        try:
+            await page.goto(url, wait_until="domcontentloaded")
+        except Exception as e:
+            logger.debug("Navigation to %s failed: %s", url, e)
+            raise PageTimeoutError(f"Failed to navigate to {url}") from e
 
-        # Additional wait for JavaScript execution and dynamic content rendering.
-        # Some pages render content via JavaScript after the load event.
-        # This handles SPAs and dynamically-loaded content.
-        await asyncio.sleep(1)
+        # Additional wait for JavaScript to execute
+        await asyncio.sleep(2)
 
-        # Verify page loaded successfully
-        if not tab.url or tab.url == "about:blank":
-            raise PageTimeoutError("Page did not load - no URL returned")
+        # Verify page loaded
+        if not page.url or page.url == "about:blank":
+            raise PageTimeoutError("Page did not load — no URL returned")
 
-        page_content = await tab.get_content()
-        if _check_captcha(tab.url, page_content):
+        page_content = await _get_page_html(page)
+        if _check_captcha(page.url, page_content):
             raise CaptchaError("Captcha detected")
 
         # Clean HTML before conversion
@@ -673,15 +734,6 @@ async def _fetch_browser_impl(
         return markdown
 
     finally:
-        # Clean up tab first, then browser
-        if tab is not None:
-            try:
-                await tab.close()
-            except Exception:
-                pass
-            tab = None
-
-        # Cancel background tasks and stop browser cleanly
         try:
             await _cleanup_browser(browser)
         except Exception:

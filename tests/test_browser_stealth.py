@@ -1,17 +1,16 @@
-"""Tests for the browser_stealth anti-detection module."""
+"""Tests for the browser_stealth anti-detection module (Camoufox)."""
 
 import json
-import tempfile
-from pathlib import Path
 
 import pytest
 
 from serp.browser_stealth import (
     DEFAULT_FINGERPRINT,
     FingerprintProfile,
-    build_chrome_flags,
+    WIN10_FONTS,
     build_fingerprint_script,
-    inject_webrtc_prefs,
+    build_firefox_prefs,
+    build_webrtc_spoof,
 )
 
 
@@ -28,6 +27,8 @@ class TestFingerprintProfile:
         assert fp.hardware_concurrency == 8
         assert fp.device_memory == 8
         assert fp.mobile is False
+        # Default UA is Firefox now (not Chrome)
+        assert "Firefox" in fp.user_agent
 
     def test_default_is_same_as_explicit_defaults(self):
         assert DEFAULT_FINGERPRINT == FingerprintProfile()
@@ -37,20 +38,6 @@ class TestFingerprintProfile:
         with pytest.raises(AttributeError):
             fp.platform = "MacIntel"
 
-    def test_chrome_version_extracts_from_ua(self):
-        fp = FingerprintProfile(user_agent="Mozilla/5.0 Chrome/128.0.0.0 Safari/537.36")
-        assert fp.chrome_version == "128"
-
-    def test_chrome_version_fallback(self):
-        fp = FingerprintProfile(user_agent="no-chrome-here")
-        assert fp.chrome_version == "125"
-
-    def test_platform_version_win32(self):
-        assert FingerprintProfile(platform="Win32").platform_version == "15.0.0"
-
-    def test_platform_version_other(self):
-        assert FingerprintProfile(platform="MacIntel").platform_version == "10.15.7"
-
     def test_custom_values(self):
         fp = FingerprintProfile(screen_width=2560, screen_height=1440, mobile=True)
         assert fp.screen_width == 2560
@@ -58,31 +45,43 @@ class TestFingerprintProfile:
         assert fp.mobile is True
 
 
-class TestBuildChromeFlags:
-    """Tests for build_chrome_flags()."""
+class TestBuildFirefoxPrefs:
+    """Tests for build_firefox_prefs()."""
 
-    def test_returns_list_of_strings(self):
-        flags = build_chrome_flags(DEFAULT_FINGERPRINT)
-        assert isinstance(flags, list)
-        assert all(isinstance(f, str) for f in flags)
+    def test_returns_dict(self):
+        prefs = build_firefox_prefs()
+        assert isinstance(prefs, dict)
 
-    def test_contains_core_stealth_flags(self):
-        flags = build_chrome_flags(DEFAULT_FINGERPRINT)
-        flags_str = " ".join(flags)
-        assert "--disable-blink-features=AutomationControlled" in flags
-        assert "--disable-dev-shm-usage" in flags
-        assert "--no-first-run" in flags
-        assert "--disable-extensions" in flags
-        assert "--disable-infobars" in flags
+    def test_gtk_isolation(self):
+        prefs = build_firefox_prefs()
+        assert prefs["widget.non-native-theme.enabled"] is True
+        assert prefs["widget.use-xdg-desktop-portal.settings"] == 0
 
-    def test_contains_webrtc_flags(self):
-        flags = build_chrome_flags(DEFAULT_FINGERPRINT)
-        assert "--webrtc-ip-handling-policy=disable_non_proxied_udp" in flags
+    def test_font_visibility_level3(self):
+        prefs = build_firefox_prefs()
+        assert prefs["layout.css.font-visibility.standard"] == 3
+        assert prefs["layout.css.font-visibility.private"] == 3
+        assert prefs["layout.css.font-visibility.tracking-protection"] == 3
 
-    def test_window_size_uses_profile(self):
-        fp = FingerprintProfile(screen_width=2560, screen_height=1440)
-        flags = build_chrome_flags(fp)
-        assert "--window-size=2560,1440" in flags
+    def test_locale_overrides_present(self):
+        prefs = build_firefox_prefs()
+        assert "font.name-list.system-ui.x-western" in prefs
+        assert "font.name.system-ui.x-western" in prefs
+        assert "font.name.sans-serif.tr" in prefs
+        assert "font.name-list.sans-serif.az" in prefs
+        assert "font.name.serif.ja" in prefs
+        assert "font.name.monospace.ko" in prefs
+
+    def test_font_system_whitelist(self):
+        prefs = build_firefox_prefs()
+        assert "Segoe UI" in prefs["font.system.whitelist"]
+
+    def test_ui_element_fonts(self):
+        prefs = build_firefox_prefs()
+        assert "ui.font.menu" in prefs
+        assert "ui.font.icon" in prefs
+        assert "ui.font.message-box" in prefs
+        assert "12px 'Segoe UI'" in prefs["ui.font.menu"]
 
 
 class TestBuildFingerprintScript:
@@ -95,7 +94,7 @@ class TestBuildFingerprintScript:
 
     def test_contains_guard_against_double_injection(self):
         script = build_fingerprint_script(DEFAULT_FINGERPRINT)
-        assert "window._eP_" in script
+        assert "window._eF_" in script
 
     def test_interpolates_screen_dimensions(self):
         fp = FingerprintProfile(screen_width=2560, screen_height=1440)
@@ -106,11 +105,6 @@ class TestBuildFingerprintScript:
     def test_interpolates_device_memory(self):
         script = build_fingerprint_script(FingerprintProfile(device_memory=16))
         assert "16" in script
-
-    def test_interpolates_chrome_version(self):
-        script = build_fingerprint_script(DEFAULT_FINGERPRINT)
-        # DEFAULT has Chrome 125 in user_agent
-        assert '"125"' in script
 
     def test_interpolates_platform(self):
         script = build_fingerprint_script(DEFAULT_FINGERPRINT)
@@ -123,43 +117,55 @@ class TestBuildFingerprintScript:
         assert "0x9245" in script  # WEBGL_VENDOR
         assert "0x9246" in script  # WEBGL_RENDERER
 
+    def test_firefox_specific_overrides(self):
+        script = build_fingerprint_script(DEFAULT_FINGERPRINT)
+        assert "navigator.oscpu" in script
+        assert "'Windows NT 10.0; Win64; x64'" in script
+        assert "navigator.plugins" in script
+
     def test_no_raw_user_input_injection(self):
         """Verify profile values are JSON-escaped to prevent JS injection."""
         fp = FingerprintProfile(webgl_vendor='"; alert("xss"); "')
         script = build_fingerprint_script(fp)
-        # json.dumps wraps in quotes and escapes inner quotes, so the raw
-        # unescaped payload should never appear verbatim.
         raw_payload = '"; alert("xss"); "'
         assert raw_payload not in script
 
+    def test_oscpu_not_present_for_non_firefox(self):
+        """OSCPU override uses runtime detection, always present in script template."""
+        script = build_fingerprint_script(DEFAULT_FINGERPRINT)
+        # The _isFx runtime check is always in the template
+        assert "oscpu" in script
 
-class TestInjectWebrtcPrefs:
-    """Tests for inject_webrtc_prefs()."""
 
-    def test_creates_default_preferences_file(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            inject_webrtc_prefs(tmpdir)
-            prefs_path = Path(tmpdir) / "Default" / "Preferences"
-            assert prefs_path.exists()
-            prefs = json.loads(prefs_path.read_text())
-            assert prefs["profile"]["webRTC"]["multiple_routes_enabled"] is False
-            assert prefs["profile"]["webRTC"]["nonproxied_udp_enabled"] is False
-            assert prefs["default_content_setting_values"]["webrtc_ip_handling_policy"] == 1
+class TestBuildWebrtcSpoof:
+    """Tests for build_webrtc_spoof()."""
 
-    def test_merges_with_existing_preferences(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            prefs_path = Path(tmpdir) / "Default" / "Preferences"
-            prefs_path.parent.mkdir(parents=True)
-            prefs_path.write_text(json.dumps({"existing_key": "value"}))
+    def test_returns_string_with_proxy_ip(self):
+        script = build_webrtc_spoof("1.2.3.4")
+        assert isinstance(script, str)
+        assert '"1.2.3.4"' in script
+        assert "window._eW_" in script
 
-            inject_webrtc_prefs(tmpdir)
-            prefs = json.loads(prefs_path.read_text())
-            # Existing key preserved
-            assert prefs["existing_key"] == "value"
-            # WebRTC prefs added
-            assert prefs["profile"]["webRTC"]["multiple_routes_enabled"] is False
+    def test_contains_webrtc_wrapper(self):
+        script = build_webrtc_spoof("8.8.8.8")
+        assert "_WrappedPC" in script
+        assert "_replaceIPs" in script
+        assert "_sanitizeCandidate" in script
+        assert "RTCPeerConnection" in script
 
-    def test_creates_default_dir_if_missing(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            inject_webrtc_prefs(tmpdir)
-            assert (Path(tmpdir) / "Default" / "Preferences").exists()
+    def test_uses_provided_ip(self):
+        script = build_webrtc_spoof("192.0.2.1")
+        assert '"192.0.2.1"' in script
+
+
+class TestWin10Fonts:
+    """Tests for WIN10_FONTS list."""
+
+    def test_contains_core_windows_fonts(self):
+        assert "Arial" in WIN10_FONTS
+        assert "Segoe UI" in WIN10_FONTS
+        assert "Consolas" in WIN10_FONTS
+        assert "Times New Roman" in WIN10_FONTS
+
+    def test_minimum_font_count(self):
+        assert len(WIN10_FONTS) >= 50

@@ -1,4 +1,4 @@
-nodriver
+camoufox[geoip]
 markdownify
 httpx
 beautifulsoup4
