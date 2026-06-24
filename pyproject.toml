@@ -4,16 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "serp-scraper"
-version = "2.0.13"
-description = "SERP scraper with nodriver, proxy rotation, and stealth browsing"
-readme = "README.md"
-license = {text = "MIT"}
-authors = [
-    {name = "neuronaline", email = "flashneuron@proton.me"}
-]
+version = "2.0.14"
+description = "SERP scraper with Camoufox, proxy rotation, and stealth browsing"
 keywords = [
     "serp", "scraping", "google", "search", "results",
-    "nodriver", "selenium", "web-scraping",
+    "camoufox", "firefox", "web-scraping",
     "proxy", "proxy-rotation", "stealth", "browser-automation"
 ]
 classifiers = [
@@ -31,7 +26,7 @@ classifiers = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    "nodriver>=0.50.0",
+    "camoufox[geoip]>=0.4.0",
     "markdownify>=0.12.0",
     "httpx>=0.25.0",
     "beautifulsoup4>=4.12.0",
