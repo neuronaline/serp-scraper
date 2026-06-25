@@ -3,11 +3,8 @@
 import pytest
 
 from serp.cleaning import (
-    ValidationResult,
     clean_html,
     clean_markdown,
-    extract_main_content,
-    validate_content,
 )
 
 
@@ -87,6 +84,13 @@ class TestCleanHtml:
         assert "<link" not in result
         assert "Content" in result
 
+    def test_removes_svg_elements(self):
+        """SVG elements (vector graphics, not text) should be removed."""
+        html = "<html><body><svg><text>Some SVG text</text></svg><p>Real content</p></body></html>"
+        result = clean_html(html)
+        assert "Some SVG text" not in result
+        assert "Real content" in result
+
 
 class TestCleanMarkdown:
     """Tests for clean_markdown function."""
@@ -119,65 +123,6 @@ class TestCleanMarkdown:
     def test_trims_lines_and_strips_blank_edges(self):
         result = clean_markdown("\n\n\n  Hello world  \n\n\n")
         assert result == "Hello world"
-
-
-class TestExtractMainContent:
-    """Tests for extract_main_content priority: article > main > body."""
-
-    def test_prefers_article_over_main(self):
-        html = "<html><body><article><p>Article</p></article><main><p>Main</p></main></body></html>"
-        result = extract_main_content(html)
-        assert "Article" in result
-        assert "Main" not in result
-
-    def test_falls_back_to_main(self):
-        html = "<html><body><nav>Nav</nav><main><p>Main</p></main></body></html>"
-        result = extract_main_content(html)
-        assert "Main" in result
-
-    def test_falls_back_to_body(self):
-        html = "<html><body><nav>Nav</nav><p>Body</p></body></html>"
-        result = extract_main_content(html)
-        assert "Body" in result
-
-
-class TestValidateContent:
-    """Tests for validate_content function."""
-
-    def test_too_short_content_is_invalid(self):
-        result = validate_content("Short", min_length=100)
-        assert not result.is_valid
-        assert len(result.errors) > 0
-
-    def test_valid_content_passes(self):
-        html = "<html><body><p>A paragraph with sufficient length to pass validation.</p><h1>H</h1></body></html>"
-        result = validate_content(html, min_length=50)
-        assert result.is_valid
-        assert result.content_length >= 50
-
-    def test_element_counts_tracked(self):
-        html = "<html><body><p>A</p><p>B</p><h1>T</h1><h2>S</h2><table><tr><td>D</td></tr></table></body></html>"
-        result = validate_content(html)
-        assert result.element_counts["p"] >= 2
-        assert result.element_counts["h1"] == 1
-        assert result.element_counts["table"] == 1
-
-    def test_paragraph_and_heading_warnings(self):
-        html = "<html><body><p>Only one</p></body></html>"
-        result = validate_content(html, min_paragraphs=2, min_headings=1)
-        assert any("Few paragraphs" in w for w in result.warnings)
-        assert any("Few headings" in w for w in result.warnings)
-
-    def test_bom_and_encoding_detected(self):
-        bom_result = validate_content("\ufeff<html><body><p>Content</p></body></html>")
-        assert any("BOM" in w for w in bom_result.warnings)
-
-        enc_result = validate_content("<html><body><p>Bad\ufffdcontent</p></body></html>")
-        assert any("encoding" in w.lower() for w in enc_result.warnings)
-
-    def test_empty_and_whitespace_invalid(self):
-        assert not validate_content("").is_valid
-        assert not validate_content("   \n\t  ").is_valid
 
 
 class TestIntegration:

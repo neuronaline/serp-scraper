@@ -25,7 +25,7 @@ class FetchRequest(BaseModel):
 
     url: HttpUrl = Field(..., description="URL to fetch")
     prefer_browser: bool = Field(
-        default=True, description="Use browser (Camoufox) instead of HTTP"
+        default=True, description="Deprecated, ignored (browser is always used)"
     )
     compress: bool = Field(
         default=False,

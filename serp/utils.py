@@ -202,47 +202,64 @@ def require_virtual_display() -> None:
 
 
 def contains_javascript(html: str) -> bool:
-    """Detect if HTML content contains JavaScript code.
+    """Detect if HTML content requires a browser to render.
 
-    Checks for the presence of <script> tags with meaningful JavaScript content.
-    This is used to determine whether a page requires browser-based rendering
-    (to execute JavaScript) versus being fetchable via lightweight HTTP requests.
+    Checks for the presence of <script> tags with meaningful JavaScript content,
+    but only returns True if there is NOT already substantial SSR content
+    (visible body text) that BS4 can parse.  Many modern pages load analytics
+    or tracking scripts but already contain their full content in server-side
+    rendered HTML.
 
-    The detection looks for:
+    Strategy:
+    1. First check if there's substantial visible body text (>200 chars).
+       If yes, BS4 can handle it regardless of scripts — return False.
+    2. Otherwise, fall through to the script-detection logic.
+
+    The script detection looks for:
     - <script> tags with non-empty src attributes (external JS files)
     - <script> tags with inline JavaScript content (between opening and closing tags)
 
     Note: We do NOT flag <script> tags with only JSON-LD structured data or
-    other non-JavaScript content types (e.g., type="application/ld+json").
+    other non-JavaScript content types (e.g., type=\"application/ld+json\").
 
     Args:
         html: Raw HTML string to analyze
 
     Returns:
-        True if the page contains JavaScript that requires a browser to execute,
-        False if the page is static HTML that can be parsed directly
+        True if the page requires a browser to render (no substantial SSR content
+        AND JavaScript detected), False if BS4 can parse the page directly.
 
     Example:
-        >>> html = '<html><body><script src="app.js"></script></body></html>'
+        >>> html = '<html><body><p>Hello world</p><script src=\"analytics.js\"></script></body></html>'
         >>> contains_javascript(html)
-        True
+        False   # Has substantial visible SSR content
 
-        >>> html = '<html><body><p>Static content</p></body></html>'
+        >>> html = '<html><body><div id=\"app\"></div><script src=\"app.js\"></script></body></html>'
         >>> contains_javascript(html)
-        False
+        True    # Only JS-rendered content
     """
     import re
 
     if not html:
         return False
 
-    # Check for <script> tags with external JS (src attribute)
-    # Pattern matches: <script ... src="..." ...> (possibly with other attributes)
+    # ── Step 1: Check for substantial SSR content ──────────────────
+    # Extract visible body text between HTML tags (strip all markup).
+    # If there's enough text already, BS4 can parse it even if scripts exist.
+    visible_text = re.sub(r'<[^>]+>', '', html)
+    visible_text = re.sub(r'\s+', ' ', visible_text).strip()
+
+    # Heuristic: >200 chars of visible text means the page has SSR'd content
+    # that BS4 can process.  Most SPAs or JS-heavy pages have minimal SSR
+    # (<100 chars has literally just a loader or <div id="root"></div>).
+    if len(visible_text) > 200:
+        return False
+
+    # ── Step 2: Check for <script> tags with external JS (src attr) ─
     if re.search(r'<script[^>]*\bsrc\s*=', html, re.IGNORECASE):
         return True
 
-    # Check for <script> tags with inline JavaScript content
-    # Pattern matches: <script ...> content </script>
+    # ── Step 3: Check for inline scripts with actual JS content ─────
     # Excludes type="application/json" or type="application/ld+json"
     script_pattern = re.compile(
         r'<script(?![^>]*\btype\s*=\s*["\']?(?:application/(?:json|ld\+json)|text/json)[^>]*>)'
@@ -251,12 +268,8 @@ def contains_javascript(html: str) -> bool:
     )
 
     for match in script_pattern.finditer(html):
-        content = match.group(0)
-        # Check if it has actual JavaScript content (not just whitespace/comments)
-        # Strip the tag itself and whitespace
-        inner = re.sub(r'<script[^>]*>', '', content, flags=re.IGNORECASE)
+        inner = re.sub(r'<script[^>]*>', '', match.group(0), flags=re.IGNORECASE)
         inner = re.sub(r'</script>', '', inner, flags=re.IGNORECASE).strip()
-        # If there's meaningful content beyond whitespace, it's JS
         if inner and not re.match(r'^[\s/*]*$', inner):
             return True
 

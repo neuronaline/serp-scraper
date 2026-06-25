@@ -2,11 +2,71 @@
 
 import argparse
 import asyncio
+import signal
 import sys
+from typing import Optional, Set
 
 from serp import SerpClient, GoogleNewsClient, ScholarClient, ProxyError, CaptchaError, PageTimeoutError, ParseError, compress_content
 from serp.config_pydantic import get_default_config
 from serp.output_formatter import OutputFormatter, OutputError, OUTPUT_TEXT, OUTPUT_JSON
+
+# ── Graceful shutdown helpers ────────────────────────────────────────
+_shutdown_requested = False
+_running_tasks: Set[asyncio.Task] = set()
+
+
+def _handle_signal(sig: int, frame) -> None:
+    """Handle SIGINT/SIGTERM by cancelling all running tasks."""
+    global _shutdown_requested
+    if _shutdown_requested:
+        # Second Ctrl+C — hard exit
+        print("\n\nForced exit.")
+        sys.exit(1)
+    _shutdown_requested = True
+    print("\n\nShutting down gracefully (press Ctrl+C again to force)...")
+    for task in _running_tasks:
+        task.cancel()
+
+
+def _run_async_main(coro) -> None:
+    """Run the main async function with proper signal handling and cleanup.
+
+    This replaces ``asyncio.run()`` to ensure:
+    - SIGINT (Ctrl+C) and SIGTERM are handled for graceful cancellation.
+    - All pending tasks are cancelled before the event loop closes.
+    - Subprocess transports (Playwright/Firefox) are cleaned up properly,
+      avoiding ``RuntimeError: Event loop is closed`` on shutdown.
+    """
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        # Register signal handlers
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, lambda s=sig: _handle_signal(s, None))
+            except NotImplementedError:
+                # Windows or non-main-thread — fall back to add_signal_handler
+                signal.signal(sig, _handle_signal)
+
+        main_task = loop.create_task(coro)
+        _running_tasks.add(main_task)
+        main_task.add_done_callback(_running_tasks.discard)
+
+        loop.run_until_complete(main_task)
+    except asyncio.CancelledError:
+        # Graceful cancellation — normal path on Ctrl+C
+        pass
+    finally:
+        # Cancel any remaining tasks
+        pending = asyncio.all_tasks(loop)
+        for task in pending:
+            task.cancel()
+        if pending:
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        # Shutdown async generators and close the loop cleanly
+        loop.run_until_complete(loop.shutdown_asyncgens())
+        loop.close()
+        asyncio.set_event_loop(None)
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -161,7 +221,7 @@ async def test_fetch(args: argparse.Namespace) -> int:
 
     try:
         async with SerpClient(config=config) as client:
-            content = await client.fetch(url, use_cache=use_cache, prefer_browser=False)
+            content = await client.fetch(url, use_cache=use_cache, prefer_browser=True)
 
         # Apply compression after fetch so we can report metadata
         was_truncated = False
@@ -405,6 +465,8 @@ async def test_scholar(args: argparse.Namespace) -> int:
 async def interactive_menu(args: argparse.Namespace) -> None:
     """Main interactive menu."""
     while True:
+        if _shutdown_requested:
+            break
         print("\n" + "=" * 50)
         print("  SERP SCRAPER - TEST TOOL")
         print("=" * 50)
@@ -415,7 +477,10 @@ async def interactive_menu(args: argparse.Namespace) -> None:
         print("4. Google Scholar")
         print("5. Exit")
 
-        choice = input("\nSelect option: ").strip()
+        choice = input("Select option: ").strip()
+
+        if _shutdown_requested:
+            break
 
         exit_code = 0
         if choice == "1":
@@ -449,7 +514,7 @@ def main() -> None:
     print("\nConfigure via .env file (see .env.example)")
 
     try:
-        asyncio.run(interactive_menu(args))
+        _run_async_main(interactive_menu(args))
     except KeyboardInterrupt:
         print("\n\nInterrupted. Goodbye!")
 

@@ -61,7 +61,7 @@ from .browser_stealth import (
 )
 
 # Convenience functions (use default client)
-from .client import quick_search, quick_fetch, quick_search_http
+from .client import quick_search, quick_fetch
 
 # Google News RSS module
 from .google_news import (
@@ -129,7 +129,6 @@ __all__ = [
     # Convenience functions (use default client, recommended for simple use)
     "quick_search",
     "quick_fetch",
-    "quick_search_http",
     # Utilities
     "set_log_level",
     "get_default_client",

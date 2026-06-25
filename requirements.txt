@@ -1,6 +1,6 @@
 camoufox[geoip]
 markdownify
 httpx
-beautifulsoup4
 python-dotenv
-pydantic
+pydantic>=2.0
+pydantic-settings>=2.0

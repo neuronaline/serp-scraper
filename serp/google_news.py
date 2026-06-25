@@ -8,28 +8,15 @@ It follows the workflow described in GOOGLE_NEWS_NASIL_CALISIR.md:
 4. Deduplicate results
 5. Return clean news lists
 
-FETCH STRATEGY (BS4 Primary, Browser Fallback):
-===============================================
+FETCH STRATEGY (Browser Only):
+==============================
 For article content extraction (get_news_with_content):
-1. PRIMARY: BS4 + HTTP fetch
-   - Fast HTTP request via httpx
-   - HTML parsed and cleaned with BeautifulSoup4
-   - Converts to Markdown via markdownify
-   - Advantages: Low resource usage, fast execution
-
-2. FALLBACK: Browser-based (Camoufox)
-   - Invoked only when BS4 fetch fails or returns unusable content
-   - Handles JavaScript-rendered pages, anti-bot measures
-   - Higher resource usage but more reliable
-
-Error conditions that trigger browser fallback:
-- Empty or minimal content (<50 chars)
-- CAPTCHA detection
-- Parse errors
-- Connection/timeout errors
+All article fetching uses Camoufox browser directly for reliability.
+Previously there was a BS4-first-then-browser-fallback strategy, but
+browser is now always used to ensure full content capture.
 
 Note: The RSS feed itself uses HTTP (no JS required), but when extracting
-full article content from individual news URLs, the BS4+browser strategy applies.
+full article content from individual news URLs, the browser strategy applies.
 
 Example:
     >>> import asyncio
@@ -53,12 +40,15 @@ from typing import Optional
 from urllib.parse import urlencode, urlparse
 
 import httpx
+import markdownify
 
 from .cache import get_cache
 from .cleaning import clean_html, clean_markdown
 from .config_pydantic import SerpConfig, get_default_config
+from .parsers import _create_browser, _cleanup_browser, _create_page, _get_page_html, _check_captcha
 from .types import RetryPolicy
 from .utils import (
+    CaptchaError,
     PageTimeoutError,
     ParseError,
     ProxyError,
@@ -268,13 +258,9 @@ class GoogleNewsClient:
         else:
             port = 823
 
-        # Build username with DataImpulse parameter format
-        # Format: login__cr.country (country attached directly with __)
-        # Additional params like sessid, sessttl are appended with ;
         username = ps.dataimpulse_user
 
         if ps.dataimpulse_country:
-            # Country parameter attached directly to username with __
             username += f"__cr.{ps.dataimpulse_country}"
 
         if ps.dataimpulse_sessid and not is_sticky:
@@ -682,7 +668,7 @@ class GoogleNewsClient:
 
         This method:
         1. Fetches news items via RSS (same as get_news)
-        2. For each article URL, extracts full content using BS4 + browser fallback
+        2. For each article URL, extracts full content using Camoufox browser
 
         Args:
             company_name: Name of the company
@@ -721,11 +707,7 @@ class GoogleNewsClient:
         return news_items
 
     async def _fetch_article_content(self, url: str) -> str:
-        """Fetch article content using BS4 primary, browser fallback.
-
-        Strategy:
-        1. Try BS4 + HTTP (fast, lightweight)
-        2. On failure → fallback to browser (handles JS/CAPTCHA)
+        """Fetch article content using Camoufox browser.
 
         Args:
             url: Article URL to fetch
@@ -734,118 +716,31 @@ class GoogleNewsClient:
             Article content as Markdown string
 
         Raises:
-            Exception: If both BS4 and browser fail
+            Exception: If browser fetch fails
         """
-        # Phase 1: Try BS4 primary
-        try:
-            content = await self._fetch_article_bs4(url)
-            if content and len(content.strip()) > 50:
-                logger.debug(f"BS4 fetch successful for article: {url}")
-                return content
-            else:
-                logger.debug(f"BS4 returned minimal content for article, trying browser")
-                raise ParseError("Minimal content from BS4")
-        except Exception as bs4_error:
-            logger.debug(f"BS4 fetch failed for article, falling back to browser: {bs4_error}")
-
-        # Phase 2: Browser fallback
-        try:
-            content = await self._fetch_article_browser(url)
-            logger.debug(f"Browser fetch successful for article: {url}")
-            return content
-        except Exception as browser_error:
-            logger.warning(f"Both BS4 and browser failed for article {url}: {browser_error}")
-            raise browser_error
-
-    async def _fetch_article_bs4(self, url: str) -> str:
-        """Fetch article using HTTP + BeautifulSoup4.
-
-        Args:
-            url: Article URL to fetch
-
-        Returns:
-            Article content as Markdown string
-
-        Raises:
-            ProxyError: If HTTP request fails
-            PageTimeoutError: If request times out
-        """
-        import httpx
+        from .parsers import _create_browser, _cleanup_browser, _create_page, _get_page_html, _check_captcha
 
         proxy = self._get_random_proxy()
-        proxy_url = self._build_proxy_url(proxy)
-
-        headers = {
-            "User-Agent": _random_user_agent(),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": f"{self._news_settings.language}-{self._news_settings.country},{self._news_settings.language};q=0.9",
-        }
-
-        timeout = float(self._config.search.timeout)
-
-        async with httpx.AsyncClient(
-            proxy=proxy_url,
-            timeout=timeout,
-            follow_redirects=True,
-            headers=headers,
-        ) as client:
-            response = await client.get(url)
-            if response.status_code != 200:
-                raise ProxyError(f"Article HTTP fetch failed with status {response.status_code}")
-
-            html_content = response.text
-            logger.debug(f"Fetched article HTML ({len(html_content)} chars)")
-
-            # Clean HTML with BeautifulSoup4
-            cleaned_html = self._clean_article_html(html_content)
-
-            # Convert to Markdown
-            import markdownify
-            markdown = markdownify.markdownify(cleaned_html, heading_style="ATX")
-
-            # Post-clean markdown
-            markdown = self._clean_article_markdown(markdown)
-
-            return markdown
-
-    async def _fetch_article_browser(self, url: str) -> str:
-        """Fetch article using Camoufox browser.
-
-        Args:
-            url: Article URL to fetch
-
-        Returns:
-            Article content as Markdown string
-
-        Raises:
-            PageTimeoutError: If page load times out
-            ProxyError: If browser fails
-        """
-        from .parsers import _create_browser, _cleanup_browser
-
-        proxy = self._get_random_proxy()
-        browser = await _create_browser(proxy, self._config.search.headless)
+        browser = await _create_browser(proxy, self._config.search.headless, block_images=True)
         if browser is None:
             raise ProxyError("Failed to start browser for article fetch")
 
         try:
-            page = browser._serp_page
+            page = await _create_page(browser)
             await page.goto(url, wait_until="domcontentloaded")
-            await asyncio.sleep(3)  # Wait for JS to execute
+            await asyncio.sleep(2)  # Wait for JS to execute
 
             page_content = await page.content()
 
             # Check for CAPTCHA
             current_url = (page.url or "").lower()
             if "sorry/app" in current_url or "/captcha/" in current_url:
-                from .utils import CaptchaError
                 raise CaptchaError("CAPTCHA detected")
 
             # Clean HTML before conversion
             cleaned_html = clean_html(page_content)
 
             # Convert to Markdown
-            import markdownify
             markdown = markdownify.markdownify(cleaned_html, heading_style="ATX")
 
             # Post-clean markdown
@@ -858,32 +753,6 @@ class GoogleNewsClient:
                 await _cleanup_browser(browser)
             except Exception:
                 pass
-
-    def _clean_article_html(self, html: str) -> str:
-        """Clean article HTML using BeautifulSoup4.
-
-        This method delegates to the cleaning module's clean_html function.
-
-        Args:
-            html: Raw HTML string
-
-        Returns:
-            Cleaned HTML string
-        """
-        return clean_html(html)
-
-    def _clean_article_markdown(self, markdown: str) -> str:
-        """Clean Markdown content after HTML-to-Markdown conversion.
-
-        This method delegates to the cleaning module's clean_markdown function.
-
-        Args:
-            markdown: Markdown string
-
-        Returns:
-            Cleaned Markdown string
-        """
-        return clean_markdown(markdown)
 
     async def __aenter__(self) -> "GoogleNewsClient":
         """Enter async context manager."""

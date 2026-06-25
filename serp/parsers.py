@@ -175,6 +175,14 @@ async def _create_page(browser) -> Any:
     """
     fp = getattr(browser, "_serp_fingerprint", DEFAULT_FINGERPRINT)
     page = await browser.new_page()
+
+    # Suppress pageerror events that could crash the browser.
+    # Firefox (Gecko) may emit page errors with undefined `location.url`,
+    # which triggers a TypeError inside Playwright's internal error handling
+    # and kills the entire browser context.  This handler swallows those
+    # errors safely so that normal page operations continue uninterrupted.
+    page.on("pageerror", lambda err: logger.debug("Page error (suppressed): %s", err))
+
     # Note: proxy_ip is intentionally "0.0.0.0" to avoid leaking the real IP.
     # The WebRTC spoof replaces public IPs; an empty string would delete them.
     await apply_stealth(page, fp, proxy_ip="0.0.0.0")
@@ -200,12 +208,18 @@ def _check_captcha(url: str, page_source: str = "") -> bool:
     content_lower = page_source.lower()
     has_captcha_content = any(pattern in content_lower for pattern in captcha_patterns)
     has_captcha_iframe = 'id="captcha"' in content_lower or 'class="captcha"' in content_lower
+    # Require actual CAPTCHA widget HTML, not just the word appearing anywhere.
+    # A blog post or privacy policy may mention "reCAPTCHA" or "hCaptcha" in
+    # text — that is NOT a CAPTCHA challenge.  Only flag if the specific
+    # widget elements (g-recaptcha / h-captcha divs) or challenge pages are
+    # present.
     has_explicit_captcha = (
-        ("recaptcha" in content_lower and ("g-recaptcha" in content_lower or "google.com/recaptcha" in content_lower))
-        or ("hcaptcha" in content_lower and ("h-captcha" in content_lower or "hcaptcha.com" in content_lower))
+        ("recaptcha" in content_lower and "g-recaptcha" in content_lower)
+        or ("hcaptcha" in content_lower and "h-captcha" in content_lower)
         or "cf-challenge" in content_lower
-        or "recaptcha" in content_lower
-        or "hcaptcha" in content_lower
+        or "google.com/recaptcha" in content_lower
+        or "hcaptcha.com" in content_lower
+        or "challenges.cloudflare.com" in content_lower
     )
     return has_captcha_content or has_explicit_captcha or has_captcha_iframe
 
@@ -219,6 +233,7 @@ async def _create_browser(
     proxy: Optional[dict] = None,
     headless: bool = False,
     fingerprint: Optional[FingerprintProfile] = None,
+    block_images: bool = False,
 ) -> Any:
     """Create and return a Camoufox browser instance with full stealth applied.
 
@@ -229,6 +244,8 @@ async def _create_browser(
         proxy: Proxy dict with ``server``, ``username``, ``password`` keys.
         headless: Run in headless mode (default: ``False``).
         fingerprint: Optional ``FingerprintProfile``; uses ``DEFAULT_FINGERPRINT`` if None.
+        block_images: If True, block image loading to speed up non-SERP fetches
+            where media is irrelevant (default: ``False`` — images loaded).
 
     Returns:
         A Playwright ``Browser`` instance, or ``None`` if startup fails.
@@ -274,7 +291,7 @@ async def _create_browser(
             humanize=False,
             disable_coop=True,
             geoip=False,
-            block_images=False,
+            block_images=block_images,
             block_webrtc=False,
             fonts=WIN10_FONTS,
             custom_fonts_only=True,
@@ -309,7 +326,7 @@ async def _create_browser(
 # ─────────────────────────────────────────────────────────────────────────
 
 
-async def _wait_for_results(page: Any, selectors: list[str], timeout: int = 10) -> bool:
+async def _wait_for_results(page: Any, selectors: list[str], timeout: int = 5) -> bool:
     """Wait for any of the given CSS selectors to appear on the page.
 
     Args:
@@ -366,10 +383,11 @@ async def _parse_google_results(page: Any, page_num: int) -> list[dict[str, Any]
     js_code = """
     (function() {
         const results = [];
+        let resultIdx = 0;
         const items = document.querySelectorAll(
             'div.g, div#rso > div, div.MjjYud, div[data-hveid]'
         );
-        items.forEach((item, idx) => {
+        items.forEach((item) => {
             if (item.closest('#botstuff, [data-attrid], .kno-kp, .related-question-pair')) return;
 
             const h3 = item.querySelector('h3');
@@ -384,8 +402,9 @@ async def _parse_google_results(page: Any, page_num: int) -> list[dict[str, Any]
             const descEl = item.querySelector('div.VwiC3b, span.aCOpRe, div[data-sncf], span.st');
             const desc = descEl ? (descEl.innerText || descEl.textContent) : '';
 
+            resultIdx++;
             results.push({
-                rank: idx + 1,
+                rank: resultIdx,
                 title: title,
                 url: url,
                 description: desc
@@ -395,8 +414,8 @@ async def _parse_google_results(page: Any, page_num: int) -> list[dict[str, Any]
     })()
     """
 
-    # Poll for results with increasing delays (0.5s, 1s, 2s, 3s)
-    max_parse_attempts = 4
+    # Poll for results with short fixed delays (0.3s, 0.5s, 0.8s)
+    max_parse_attempts = 3
     seen_urls: set[str] = set()
     results: list[dict[str, Any]] = []
     base_rank = (page_num - 1) * 10
@@ -429,14 +448,14 @@ async def _parse_google_results(page: Any, page_num: int) -> list[dict[str, Any]
                 return results
 
             if parse_attempt < max_parse_attempts:
-                delay = 0.5 * (2 ** (parse_attempt - 1))
+                delay = 0.3 * parse_attempt
                 logger.debug("Google parse attempt %d returned 0 results, retrying in %.1fs...", parse_attempt, delay)
                 await asyncio.sleep(delay)
 
         except Exception as e:
             if parse_attempt < max_parse_attempts:
                 logger.debug("Google parse attempt %d failed: %s, retrying...", parse_attempt, e)
-                await asyncio.sleep(0.5 * (2 ** (parse_attempt - 1)))
+                await asyncio.sleep(0.3 * parse_attempt)
             else:
                 logger.error("Failed to parse Google results after %d attempts: %s", max_parse_attempts, e)
 
@@ -461,8 +480,9 @@ async def _parse_bing_results(page: Any, page_num: int) -> list[dict[str, Any]]:
     js_code = """
     (function() {
         const results = [];
+        let resultIdx = 0;
         const items = document.querySelectorAll('li.b_algo');
-        items.forEach((item, idx) => {
+        items.forEach((item) => {
             const h2 = item.querySelector('h2');
             if (!h2) return;
             const title = h2.innerText || h2.textContent;
@@ -475,8 +495,9 @@ async def _parse_bing_results(page: Any, page_num: int) -> list[dict[str, Any]]:
             const descEl = item.querySelector('p');
             const desc = descEl ? (descEl.innerText || descEl.textContent) : '';
 
+            resultIdx++;
             results.push({
-                rank: idx + 1,
+                rank: resultIdx,
                 title: title,
                 url: url,
                 description: desc
@@ -486,7 +507,7 @@ async def _parse_bing_results(page: Any, page_num: int) -> list[dict[str, Any]]:
     })()
     """
 
-    max_parse_attempts = 4
+    max_parse_attempts = 3
     seen_urls: set[str] = set()
     results: list[dict[str, Any]] = []
     base_rank = (page_num - 1) * 10
@@ -525,14 +546,14 @@ async def _parse_bing_results(page: Any, page_num: int) -> list[dict[str, Any]]:
                 return results
 
             if parse_attempt < max_parse_attempts:
-                delay = 0.5 * (2 ** (parse_attempt - 1))
+                delay = 0.3 * parse_attempt
                 logger.debug("Bing parse attempt %d returned 0 results, retrying in %.1fs...", parse_attempt, delay)
                 await asyncio.sleep(delay)
 
         except Exception as e:
             if parse_attempt < max_parse_attempts:
                 logger.debug("Bing parse attempt %d failed: %s, retrying...", parse_attempt, e)
-                await asyncio.sleep(0.5 * (2 ** (parse_attempt - 1)))
+                await asyncio.sleep(0.3 * parse_attempt)
             else:
                 logger.error("Failed to parse Bing results after %d attempts: %s", max_parse_attempts, e)
 
@@ -596,13 +617,13 @@ async def _search_impl(
         # Smart wait: wait for search results (or CAPTCHA page) to appear
         try:
             if source == "bing":
-                await _wait_for_results(page, ["li.b_algo", "#b_results", "ol#b_results"], timeout=8)
-                await asyncio.sleep(1)
+                await _wait_for_results(page, ["li.b_algo", "#b_results", "ol#b_results"], timeout=5)
+                await asyncio.sleep(0.5)
             else:
-                await _wait_for_results(page, ["div.g", "div#rso > div", "div.MjjYud", "div[data-hveid]"], timeout=8)
+                await _wait_for_results(page, ["div.g", "div#rso > div", "div.MjjYud", "div[data-hveid]"], timeout=5)
         except Exception as e:
             logger.debug("Smart wait for %s results timed out: %s", source, e)
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
 
         # Check for CAPTCHA / error pages
         current_url = (page.url or "").lower()
@@ -695,7 +716,7 @@ async def _fetch_browser_impl(
         PageTimeoutError: If page load fails.
         CaptchaError: If CAPTCHA is detected.
     """
-    browser = await _create_browser(proxy, headless)
+    browser = await _create_browser(proxy, headless, block_images=True)
     if browser is None:
         raise ParseError("Failed to start browser — Camoufox may not be properly installed")
 

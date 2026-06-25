@@ -3,113 +3,14 @@
 This module provides a high-level SerpClient class that encapsulates
 all functionality with a simple, consistent API.
 
-FETCH STRATEGY (BS4 Primary, Browser Fallback):
-===============================================
-Web page fetching uses a two-tier fallback strategy:
+FETCH STRATEGY (Browser Only):
+==============================
+All page fetching uses Camoufox browser directly — no BS4 fallback.
+This ensures JavaScript-rendered pages are always captured correctly.
 
-1. PRIMARY: BS4 (BeautifulSoup4) + HTTP
-   - Fast, lightweight HTTP request via httpx
-   - JavaScript detection in raw HTML (immediate browser fallback if JS found)
-   - HTML parsed and cleaned with BeautifulSoup4 (static pages only)
-   - Converts cleaned HTML to Markdown via markdownify
-   - Advantages: Low resource usage, fast execution, no browser overhead
-
-2. FALLBACK: Browser-based (Camoufox)
-   - Invoked when page contains JavaScript (requires execution)
-   - Invoked when BS4 fetch fails or returns unusable content
-   - Handles JavaScript-rendered pages, CAPTCHA, anti-bot measures
-   - Higher resource usage but more reliable for complex pages
-
-Error conditions that trigger browser fallback:
-- JavaScript detected in HTML (requires browser execution)
-- Empty or minimal content (<100 chars)
-- CAPTCHA detection
-- Parse errors
-- Connection/timeout errors
-
-HTML-to-Markdown Data Cleaning Strategies (BS4 Phase):
-======================================================
-The BS4 cleaning phase applies the following transformations:
-
-1. REMOVE_NOISE_ELEMENTS:
-   - <script>, <style>, <noscript>, <iframe> tags removed
-   - <nav>, <footer>, <header>, <aside> semantic containers removed
-   - <meta>, <link> tags removed (not visible content)
-
-2. REMOVE_HIDDEN_ELEMENTS:
-   - Elements with display:none, visibility:hidden, or hidden attribute
-   - Empty paragraphs, breaks, and spacer elements cleaned
-
-3. TEXT_CLEANUP:
-   - Excessive whitespace normalized (multiple spaces/newlines → single)
-   - Unicode whitespace characters (NBSP, etc.) replaced with regular space
-   - HTML entities decoded (&amp; → &, etc.)
-
-4. PRESERVE_STRUCTURE:
-   - Headings (h1-h6) preserved with proper hierarchy
-   - Lists (ul, ol) converted to markdown bullets/numbers
-   - Tables converted to markdown tables
-   - Blockquotes preserved
-   - Code blocks preserved (pre, code)
-
-5. LINK_AND_IMAGE_HANDLING:
-   - Relative URLs converted to absolute where possible
-   - Images alt text preserved as markdown images
-   - Links preserved but trimmed of tracking parameters optionally
-
-6. ENCODING_NORMALIZATION:
-   - Detected encoding used correctly (utf-8, iso-8859-9 for Turkish)
-   - BOM bytes removed if present
-
-FALSE-POSITIVE RISK ANALYSIS:
-============================
-The cleaning strategies are designed to minimize the risk of accidentally
-removing important data. Here's the analysis:
-
-HIGHLY SAFE (unlikely to cause data loss):
-- REMOVE_NOISE_ELEMENTS: These elements (<script>, <style>, etc.) NEVER
-  contain visible content. They contain executable code or metadata.
-  Risk: NONE. These are always safe to remove.
-
-- REMOVE_HIDDEN_ELEMENTS: Elements with display:none or visibility:hidden
-  are not visible to users and don't contribute content.
-  Risk: VERY LOW. Hidden elements typically contain:
-  - Duplicate navigation menus
-  - Loading spinners
-  - Placeholder content
-  - A/B testing variants
-  If somehow real content is hidden (rare), it would be displayed elsewhere.
-
-- TEXT_CLEANUP (whitespace normalization): This only removes EXCESS
-  whitespace. Single spaces and newlines are preserved.
-  Risk: VERY LOW. Content structure is maintained.
-
-SAFE WITH MINOR CONSIDERATION:
-- REMOVE_HIDDEN_ELEMENTS (empty paragraphs): This removes <p> elements
-  that contain ONLY whitespace or <br> tags. Real paragraphs with text
-  are preserved.
-  Risk: LOW. Spacer divs are removed, but meaningful empty paragraphs
-  are unlikely to exist in normal content.
-
-- TEXT_CLEANUP (Unicode whitespace): Replaces NBSP and similar with regular
-  space. This is safe because NBSP is a formatting character, not content.
-  Risk: LOW. Only affects formatting, not actual text content.
-
-PRESERVED WITH HIGH INTEGRITY:
-- All actual article content (headings, body text, lists, tables, quotes)
-  is explicitly preserved. The cleaning targets only non-content elements.
-  Risk: VERY LOW. Visible content passes through unchanged.
-
-IMPORTANT NOTES:
-- Images are preserved with their alt text (which often contains descriptions)
-- Links preserve their text content
-- Tables are converted preserving structure and data
-- Code blocks are explicitly excluded from whitespace normalization
-
-WORST-CASE SCENARIO:
-If cleaning erroneously removes something, the fallback browser method will
-fetch the raw page. However, this is extremely unlikely given the conservative
-approach of only removing known non-content elements.
+Previously there was a BS4-first-then-browser-fallback strategy, but
+BS4 often returned incomplete/partial content, so browser is now the
+default and only method for reliability.
 """
 
 import logging
@@ -117,12 +18,8 @@ import random
 from typing import Optional
 from urllib.parse import urlparse
 
-import markdownify
-
 from .cache import get_cache as _get_cache, reset_cache
-from .cleaning import clean_html, clean_markdown
 from .config_pydantic import SerpConfig, get_default_config, reset_default_config
-from .http_search import _search_google_simple, _search_simple_impl_bing
 from .parsers import _fetch_browser_impl, _search_impl
 from .types import CacheSettings, ProxySettings, RetryPolicy, SearchResult, SearchSettings
 from .utils import (
@@ -285,10 +182,7 @@ class SerpClient:
         """Search for query and return results.
 
         Note: Google and Bing SERP searches ALWAYS use browser (Camoufox) because
-        these search engines require JavaScript to render results. The 'method'
-        parameter is ignored for SERP searches.
-
-        For HTTP-based page fetching (BS4), use client.fetch() instead.
+        these search engines require JavaScript to render results.
 
         Args:
             query: Search query string
@@ -406,84 +300,13 @@ class SerpClient:
         source: Optional[str],
         use_cache: bool,
     ) -> list[SearchResult]:
-        """HTTP-based search using httpx."""
-        if use_cache and self._cache:
-            search_sources = (source,) if source else ("google", "bing")
-            for src in search_sources:
-                key = self._cache.make_key(query=query, page_num=page_num, source=src)
-                cached = self._cache.get(key)
-                if cached is not None:
-                    logger.debug(f"Cache hit for query='{query}', page={page_num} (source={src})")
-                    # Create SearchResult objects, using explicit source to override any cached source
-                    results = []
-                    for r in cached:
-                        results.append(SearchResult(
-                            rank=r["rank"],
-                            title=r["title"],
-                            url=r["url"],
-                            description=r.get("description", ""),
-                            source=src,
-                        ))
-                    return results
+        """HTTP-based search using httpx — DEPRECATED.
 
-        retry = self._config.retry
-
-        sources_to_try = []
-        if source == "bing":
-            sources_to_try = [("bing",)]
-        elif source == "google":
-            sources_to_try = [("google",)]
-        else:
-            sources_to_try = [("google",), ("bing",)]
-
-        last_error = None
-        for src, in sources_to_try:
-            for attempt in range(1, retry.max_retries + 1):
-                proxy = self._get_random_proxy()
-                try:
-                    if src == "google":
-                        proxy_url = self._build_proxy_url(proxy) if proxy else None
-                        results = await _search_google_simple(
-                            query, page_num, proxy_url,
-                            use_cache, self._config.cache.ttl
-                        )
-                    else:
-                        proxy_url = self._build_proxy_url(proxy) if proxy else None
-                        results = await _search_simple_impl_bing(query, page_num, proxy_url or "")
-
-                    # Empty results without an error mean the page was loaded
-                    # but no results were found (e.g., consent/bot-detection page).
-                    # Treat as parse failure so retry/failover kicks in.
-                    if not results:
-                        raise ParseError(
-                            f"No results found for query '{query}' on {src} page {page_num}"
-                        )
-
-                    if use_cache and self._cache:
-                        cache_key = self._cache.make_key(query=query, page_num=page_num, source=src)
-                        self._cache.set(cache_key, results, self._config.cache.ttl)
-
-                    logger.info(f"search_simple: {src} successful for query='{query}', page={page_num}")
-                    return [SearchResult(**r, source=src) for r in results]
-
-                except CaptchaError as e:
-                    # CAPTCHA won't clear on retry; try next source
-                    last_error = e
-                    break
-                except Exception as e:
-                    last_error = e
-                    if await self._retry_failed(attempt, e, src.upper(), retry):
-                        continue
-                    break
-
-            # Only break out of outer loop when a specific source was explicitly requested.
-            # When source is None or "auto", continue to the next source (Bing fallback).
-            if source is not None and source != "auto":
-                break
-
-        if last_error:
-            raise last_error
-        raise ParseError(f"All search attempts failed for query '{query}'")
+        This method relied on BS4 (BeautifulSoup) parsing and is no longer
+        maintained. Kept for backward compatibility only — always returns empty.
+        """
+        logger.warning("_search_http is deprecated. SERP searches always use browser.")
+        return []
 
     def _build_dataimpulse_proxy(self) -> Optional[dict]:
         """Build DataImpulse proxy dict with proper port and username parameters.
@@ -601,18 +424,22 @@ class SerpClient:
         self,
         url: str,
         use_cache: Optional[bool] = None,
-        prefer_browser: bool = False,
+        prefer_browser: bool = True,
         compress: bool = False,
     ) -> str:
         """Fetch a URL and return content as Markdown.
 
-        Strategy: BS4 primary, browser fallback on failure.
+        Uses Camoufox browser directly for reliable content extraction.
+        Previously there was a BS4-HTTP fallback, but browser is now used
+        for all fetches to ensure JavaScript-rendered content is captured.
+
+        The `prefer_browser` parameter is kept for backward compatibility
+        but is ignored — browser is always used.
 
         Args:
             url: Target URL
             use_cache: Whether to use cache. None uses client default.
-            prefer_browser: If True, use browser first (bypasses BS4).
-                            Default False - BS4 is primary method.
+            prefer_browser: Deprecated, ignored (browser is always used).
             compress: If True and content exceeds 10K chars, compress by
                       taking head, middle, and tail portions of the content.
                       The return value remains a plain string (use the
@@ -625,13 +452,6 @@ class SerpClient:
         Raises:
             ProxyError: All proxies failed
             PageTimeoutError: Page load timeout
-
-        Fetch Flow:
-            1. Check cache (if enabled)
-            2. Try BS4 + HTTP (primary method, unless prefer_browser=True)
-            3. On BS4 failure → fallback to browser (Camoufox)
-            4. Cache successful result
-            5. Apply compression if requested
         """
         effective_cache = use_cache if use_cache is not None else self._config.cache.enabled
 
@@ -650,12 +470,7 @@ class SerpClient:
 
         retry = self._config.retry
 
-        # Errors that trigger browser fallback when using BS4
-        BS4_FALLBACK_ERRORS = (
-            CaptchaError, PageTimeoutError, ProxyError, ParseError,
-            TimeoutError, ConnectionError, OSError
-        )
-        # All retryable errors (when browser is primary or in fallback)
+        # All retryable errors
         RETRYABLE_ERRORS = (
             CaptchaError, PageTimeoutError, ProxyError, ParseError,
             TimeoutError, OSError
@@ -666,12 +481,8 @@ class SerpClient:
             logger.debug(f"Fetch attempt {attempt}: proxy={proxy.get('server') if proxy else 'None'}")
 
             try:
-                if prefer_browser:
-                    # Browser-first mode (legacy behavior, explicit opt-in)
-                    result = await self._fetch_with_bs4_fallback(url, proxy)
-                else:
-                    # BS4-first mode (default): try BS4, fallback to browser on failure
-                    result = await self._fetch_bs4_then_browser(url, proxy)
+                # Always use browser (Camoufox) for reliability
+                result = await _fetch_browser_impl(url, proxy, self._config.search.headless)
 
                 # Cache the ORIGINAL (uncompressed) content so that subsequent
                 # fetches with compress=False get the full content
@@ -694,271 +505,6 @@ class SerpClient:
                 raise
 
         raise ProxyError(f"All {retry.max_retries} fetch attempts failed")
-
-    async def _fetch_bs4_then_browser(
-        self,
-        url: str,
-        proxy: Optional[dict],
-    ) -> str:
-        """Fetch using BS4 primary method, browser fallback on failure.
-
-        This is the default fetch strategy:
-        1. Try BS4 + HTTP (fast, lightweight)
-        2. On failure → fallback to browser (handles JS/CAPTCHA)
-
-        Args:
-            url: Target URL
-            proxy: Proxy dict or None
-
-        Returns:
-            Page content as Markdown string
-
-        Raises:
-            Browser error if both BS4 and browser fail
-        """
-        try:
-            # Phase 1: BS4 primary (HTTP + BeautifulSoup + markdownify)
-            result = await self._fetch_bs4_impl(url, proxy)
-
-            # Validate: empty or minimal content suggests blocked page
-            if not result or len(result.strip()) < 100:
-                logger.debug(
-                    f"BS4 returned minimal content ({len(result) if result else 0} chars), "
-                    f"falling back to browser"
-                )
-                raise ParseError("Empty or minimal content received from BS4")
-
-            logger.debug(f"BS4 fetch successful for url='{url}'")
-            return result
-
-        except Exception as bs4_error:
-            # Phase 2: Browser fallback
-            logger.debug(f"BS4 fetch failed, falling back to browser: {bs4_error}")
-            try:
-                result = await _fetch_browser_impl(url, proxy, self._config.search.headless)
-                logger.debug(f"Browser fallback successful for url='{url}'")
-                return result
-            except Exception as browser_error:
-                # Both methods failed - propagate browser error with context
-                logger.warning(
-                    f"Both BS4 and browser failed for url='{url}': "
-                    f"BS4={bs4_error}, browser={browser_error}"
-                )
-                raise browser_error
-
-    async def _fetch_bs4_impl(self, url: str, proxy: Optional[dict]) -> str:
-        """Fetch URL using HTTP + BeautifulSoup4 + markdownify.
-
-        This is the primary, lightweight fetch method:
-        - HTTP request via httpx
-        - JavaScript detection in raw HTML
-        - HTML cleaning via BeautifulSoup4 (if no JS detected)
-        - HTML-to-Markdown conversion via markdownify
-
-        If JavaScript is detected in the HTML, raises ParseError to trigger
-        browser fallback, which can execute JavaScript before parsing.
-
-        Args:
-            url: Target URL
-            proxy: Proxy dict or None
-
-        Returns:
-            Cleaned page content as Markdown string
-
-        Raises:
-            ProxyError: HTTP request failed
-            ParseError: Content parsing failed or page contains JavaScript
-        """
-        import httpx
-        from .utils import _random_user_agent, contains_javascript
-
-        proxy_url = self._build_proxy_url(proxy)
-
-        headers = {
-            "User-Agent": _random_user_agent(),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-        }
-
-        async with httpx.AsyncClient(
-            proxy=proxy_url,
-            timeout=float(self._config.search.timeout),
-            follow_redirects=True,
-            headers=headers,
-        ) as client:
-            response = await client.get(url)
-            if response.status_code != 200:
-                raise ProxyError(f"HTTP {response.status_code}")
-
-            html_content = response.text
-            logger.debug(f"Fetched HTML ({len(html_content)} chars) for url='{url}'")
-
-            # JavaScript detection: check if page contains JavaScript that
-            # requires a browser to execute. If detected, fall back to browser.
-            if contains_javascript(html_content):
-                logger.debug(
-                    f"JavaScript detected in url='{url}', "
-                    f"falling back to browser for execution"
-                )
-                raise ParseError(
-                    "Page contains JavaScript that requires browser execution"
-                )
-
-            # Phase 1: Clean HTML with BeautifulSoup4
-            cleaned_html = self._clean_html(html_content)
-
-            # Phase 2: Convert cleaned HTML to Markdown
-            markdown = markdownify.markdownify(
-                cleaned_html,
-                heading_style="ATX",
-            )
-
-            # Phase 3: Post-clean markdown (remove residual noise)
-            markdown = self._clean_markdown(markdown)
-
-            return markdown
-
-    def _clean_html(self, html: str) -> str:
-        """Clean HTML content using BeautifulSoup4.
-
-        This method delegates to the cleaning module's clean_html function.
-
-        Args:
-            html: Raw HTML string
-
-        Returns:
-            Cleaned HTML string
-        """
-        return clean_html(html)
-
-    def _clean_markdown(self, markdown: str) -> str:
-        """Clean Markdown content after HTML-to-Markdown conversion.
-
-        This method delegates to the cleaning module's clean_markdown function.
-
-        Args:
-            markdown: Markdown string from markdownify
-
-        Returns:
-            Cleaned Markdown string
-        """
-        return clean_markdown(markdown)
-
-    async def fetch_with_fallback(
-        self,
-        url: str,
-        use_cache: Optional[bool] = None,
-    ) -> str:
-        """Fetch a URL using BS4 first, falling back to browser on failure.
-
-        This method implements the BS4-first-then-browser fallback pattern:
-        1. Try BS4 + HTTP fetch (httpx + BeautifulSoup + markdownify)
-        2. On any retryable error, immediately fall back to browser (Camoufox)
-        3. Cache the successful result
-
-        Note: This method exists for backward compatibility. The default fetch()
-        method now uses the same BS4-first strategy automatically.
-
-        Args:
-            url: Target URL
-            use_cache: Whether to use cache. None uses client default.
-
-        Returns:
-            Page content as Markdown string
-
-        Raises:
-            ProxyError: All proxies failed
-            PageTimeoutError: Page load timeout
-        """
-        effective_cache = use_cache if use_cache is not None else self._config.cache.enabled
-
-        if effective_cache and self._cache:
-            cache_key = self._cache.make_key(url=url)
-            cached = self._cache.get(cache_key)
-            if cached is not None:
-                logger.debug(f"Cache hit for url='{url}'")
-                return cached
-
-        retry = self._config.retry
-
-        # Errors that trigger browser fallback
-        FALLBACK_ERRORS = (
-            CaptchaError, PageTimeoutError, ProxyError, ParseError,
-            TimeoutError, ConnectionError, OSError
-        )
-
-        for attempt in range(1, retry.max_retries + 1):
-            proxy = self._get_random_proxy()
-            logger.debug(f"Fetch with fallback attempt {attempt}: proxy={proxy.get('server') if proxy else 'None'}")
-
-            try:
-                # Phase 1: Try BS4 fetch
-                result = await self._fetch_bs4_impl(url, proxy)
-
-                # Validate response - empty/minimal content suggests blocked page
-                if not result or len(result.strip()) < 100:
-                    logger.debug(f"BS4 returned minimal content ({len(result) if result else 0} chars), falling back to browser")
-                    raise ParseError("Empty or minimal content received from BS4")
-
-            except FALLBACK_ERRORS as e:
-                # Phase 2: Immediate fallback to browser
-                logger.debug(f"BS4 fetch failed (attempt {attempt}), falling back to browser: {e}")
-                try:
-                    result = await _fetch_browser_impl(url, proxy, self._config.search.headless)
-                except Exception as browser_error:
-                    # Browser also failed - retry whole cycle
-                    if attempt < retry.max_retries:
-                        if await self._retry_failed(attempt, browser_error, "Fetch", retry):
-                            continue
-                    raise browser_error
-
-                # Browser succeeded - return without caching fallback result
-                return result
-
-            # Cache successful BS4 result (only when BS4 succeeds directly)
-            if effective_cache and self._cache:
-                cache_key = self._cache.make_key(url=url)
-                self._cache.set(cache_key, result, self._config.cache.ttl)
-
-            return result
-
-        raise ProxyError(f"All {retry.max_retries} fetch attempts failed")
-
-    async def _fetch_with_bs4_fallback(
-        self,
-        url: str,
-        proxy: Optional[dict],
-    ) -> str:
-        """Browser-first fetch with BS4 fallback.
-
-        This is used when prefer_browser=True is passed to fetch().
-        The flow is reversed: browser first, BS4 on browser failure.
-
-        Args:
-            url: Target URL
-            proxy: Proxy dict or None
-
-        Returns:
-            Page content as Markdown string
-        """
-        try:
-            result = await _fetch_browser_impl(url, proxy, self._config.search.headless)
-            logger.debug(f"Browser fetch successful for url='{url}'")
-            return result
-        except Exception as browser_error:
-            # Browser failed - try BS4 as fallback
-            logger.debug(f"Browser fetch failed, falling back to BS4: {browser_error}")
-            try:
-                result = await self._fetch_bs4_impl(url, proxy)
-                logger.debug(f"BS4 fallback successful for url='{url}'")
-                return result
-            except Exception as bs4_error:
-                logger.warning(
-                    f"Both browser and BS4 failed for url='{url}': "
-                    f"browser={browser_error}, BS4={bs4_error}"
-                )
-                # Propagate original browser error
-                raise browser_error
 
     async def __aenter__(self) -> "SerpClient":
         """Enter async context manager."""
@@ -1017,8 +563,6 @@ async def quick_search(
     search engines require JavaScript to render results. The 'method' parameter
     is accepted for backward compatibility but is ignored.
 
-    For HTTP-based page fetching, use quick_fetch() instead.
-
     Args:
         query: Search query string
         page_num: Page number (1-based, default: 1)
@@ -1036,15 +580,15 @@ async def quick_search(
     return await client.search(query, page_num, method=method, source=source)
 
 
-async def quick_fetch(url: str, prefer_browser: bool = False, compress: bool = False) -> str:
+async def quick_fetch(url: str, prefer_browser: bool = True, compress: bool = False) -> str:
     """Convenience function for fetch using default client.
 
-    Strategy: BS4 primary (HTTP + BeautifulSoup), browser fallback on failure.
+    Always uses Camoufox browser for reliability.
+    The `prefer_browser` parameter is kept for backward compatibility.
 
     Args:
         url: Target URL
-        prefer_browser: If True, use browser first (bypasses BS4).
-                        Default False — BS4 is primary method.
+        prefer_browser: Deprecated, ignored (browser is always used).
         compress: Whether to compress long content (>10K chars)
 
     Returns:
@@ -1063,21 +607,6 @@ async def quick_search_http(
     source: Optional[str] = None,
     use_cache: bool = True,
 ) -> list[SearchResult]:
-    """Convenience function for HTTP-based search.
-
-    Uses lightweight HTTP requests (httpx) instead of a full browser.
-    Note: SERP searches via client.search() now always use browser (Camoufox)
-    because search engines require JavaScript to render results. This function
-    exists for callers who specifically want the older HTTP-based search path.
-
-    Args:
-        query: Search query string
-        page_num: Page number (1-based)
-        source: Search source - "google", "bing", or None (auto)
-        use_cache: Whether to use cache
-
-    Returns:
-        List of SearchResult objects
-    """
+    """DEPRECATED. SERP searches always use browser now."""
     client = get_default_client()
     return await client._search_http(query, page_num, source, use_cache)

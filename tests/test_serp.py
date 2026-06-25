@@ -15,7 +15,6 @@ from serp import (
     set_log_level,
     quick_search,
     quick_fetch,
-    quick_search_http,
     get_default_client,
     reset_default_client,
     SerpClient,
@@ -254,4 +253,3 @@ class TestModuleLevelFunctions:
     def test_quick_functions_exist(self):
         assert callable(quick_search)
         assert callable(quick_fetch)
-        assert callable(quick_search_http)

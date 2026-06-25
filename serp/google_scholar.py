@@ -2,38 +2,10 @@
 
 This module provides functionality to scrape academic papers from Google Scholar.
 
-FETCH STRATEGY (BS4 Primary, Browser Fallback):
-===============================================
-Google Scholar pages require JavaScript to render results, but we still apply
-a BS4-first strategy for robustness:
-
-1. PRIMARY: BS4 + HTTP fetch
-   - Try HTTP request first (faster, lower resource usage)
-   - If Scholar page has cached/static content accessible, parse it
-   - This may succeed for simple queries or cached pages
-
-2. FALLBACK: Browser-based (Camoufox)
-   - Invoked when BS4 fetch fails or returns unusable content
-   - Handles JavaScript-rendered Scholar pages
-   - More reliable but heavier resource usage
-
-Error conditions that trigger browser fallback:
-- Empty or minimal content
-- CAPTCHA detection
-- Parse errors
-- Connection/timeout errors
-
-Example:
-    >>> import asyncio
-    >>> from serp.google_scholar import ScholarClient
-    >>>
-    >>> async def main():
-    ...     async with ScholarClient() as client:
-    ...         results = await client.search_scholar("machine learning")
-    ...         for r in results:
-    ...             print(f"{r.title} - Cited by {r.citation_count}")
-    >>>
-    >>> asyncio.run(main())
+FETCH STRATEGY (Browser Only):
+==============================
+Google Scholar pages require JavaScript to render results, so Camoufox
+browser is always used for reliable content extraction.
 """
 
 import asyncio
@@ -334,9 +306,10 @@ class ScholarClient:
         js_code = """
         (function() {
             const results = [];
+            let resultIdx = 0;
             const containers = document.querySelectorAll('div.gs_r.gs_or.gs_scl');
 
-            containers.forEach((container, idx) => {
+            containers.forEach((container) => {
                 const resultItem = container.querySelector('div.gs_ri');
                 const pdfContainer = container.querySelector('div.gs_ggs');
 
@@ -378,8 +351,9 @@ class ScholarClient:
                 const scholarUrl = url ? 'https://scholar.google.com/scholar?q=info:' +
                               clusterId + ':scholar.google.com/&output=cite&scirp=0&hl=en' : '';
 
+                resultIdx++;
                 results.push({
-                    rank: idx + 1,
+                    rank: resultIdx,
                     title: title,
                     url: url,
                     scholar_url: scholarUrl,
@@ -563,10 +537,10 @@ class ScholarClient:
 
                         # Wait for results
                         try:
-                            await _wait_for_results(page, [self.RESULT_CONTAINER_SELECTOR], timeout=15)
+                            await _wait_for_results(page, [self.RESULT_CONTAINER_SELECTOR], timeout=10)
                         except Exception as e:
                             logger.debug("Smart wait for Scholar results timed out: %s", e)
-                            await asyncio.sleep(2)
+                            await asyncio.sleep(1)
 
                         # Check for CAPTCHA
                         current_url = (page.url or "").lower()
