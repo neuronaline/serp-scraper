@@ -34,6 +34,8 @@ logs/
 .pytest_cache/
 .coverage
 htmlcov/
+tests/leak_detector.py
+tests/test_browser_leaks.py
 
 # Type hints
 .mypy_cache/

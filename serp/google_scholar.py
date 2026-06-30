@@ -296,6 +296,9 @@ class ScholarClient:
     async def _parse_results(self, page, page_num: int) -> list[ScholarResult]:
         """Parse Google Scholar results using JavaScript evaluation.
 
+        Uses multiple fallback selector strategies to handle different
+        Scholar layouts (A/B testing, locale variations).
+
         Args:
             page: Playwright Page with loaded Scholar results
             page_num: Current page number (0-indexed)
@@ -307,49 +310,86 @@ class ScholarClient:
         (function() {
             const results = [];
             let resultIdx = 0;
-            const containers = document.querySelectorAll('div.gs_r.gs_or.gs_scl');
+
+            // Primary selector: div.gs_r.gs_or.gs_scl
+            let containers = document.querySelectorAll('div.gs_r.gs_or.gs_scl');
+
+            // Fallback: try div.gs_ri directly (sometimes Scholar wraps
+            // results differently)
+            if (!containers || containers.length === 0) {
+                containers = document.querySelectorAll('div.gs_ri');
+            }
+
+            // Second fallback: look for any element with data-cid (Scholar
+            // attaches this attribute to every result row)
+            if (!containers || containers.length === 0) {
+                containers = document.querySelectorAll('[data-cid]');
+                // Filter to only plausible result blocks (ignore header/footer rows)
+                containers = Array.from(containers).filter(function(el) {
+                    var cid = el.getAttribute('data-cid') || '';
+                    return cid.length > 5 && el.querySelector('h3 a');
+                });
+            }
 
             containers.forEach((container) => {
-                const resultItem = container.querySelector('div.gs_ri');
-                const pdfContainer = container.querySelector('div.gs_ggs');
+                // Try to locate the inner result item (div.gs_ri).
+                // If the container itself IS the result item (fallback),
+                // use it directly.
+                var resultItem = container.querySelector('div.gs_ri') || container;
+                var pdfContainer = container.querySelector('div.gs_ggs');
 
-                if (!resultItem && !pdfContainer) return;
+                // Title — try multiple heading patterns
+                var titleEl = resultItem.querySelector('h3.gs_rt a') ||
+                              resultItem.querySelector('h3 a') ||
+                              resultItem.querySelector('a[data-clk]');
+                var title = titleEl ? (titleEl.innerText || titleEl.textContent || '').trim() : '';
+                var url = titleEl ? (titleEl.href || '') : '';
 
-                const titleEl = resultItem ? resultItem.querySelector('h3.gs_rt a') : null;
-                const title = titleEl ? (titleEl.innerText || titleEl.textContent || '') : '';
-                const url = titleEl ? (titleEl.href || '') : '';
+                // Snippet
+                var snippetEl = resultItem.querySelector('div.gs_rs');
+                var snippet = snippetEl ? (snippetEl.innerText || snippetEl.textContent || '').trim() : '';
 
-                const snippetEl = resultItem ? resultItem.querySelector('div.gs_rs') : null;
-                const snippet = snippetEl ? (snippetEl.innerText || snippetEl.textContent || '') : '';
+                // Metadata (authors, venue, year)
+                var metaEl = resultItem.querySelector('div.gs_a');
+                var metadata = metaEl ? (metaEl.innerText || metaEl.textContent || '').trim() : '';
 
-                const metaEl = resultItem ? resultItem.querySelector('div.gs_a') : null;
-                const metadata = metaEl ? (metaEl.innerText || metaEl.textContent || '') : '';
-
-                const footerEl = resultItem ? resultItem.querySelector('div.gs_fl.gs_flb') : null;
-                let citationCount = 0;
-                let pdfUrl = null;
+                // Footer with citation count and PDF links
+                var footerEl = resultItem.querySelector('div.gs_fl');
+                var citationCount = 0;
+                var pdfUrl = null;
 
                 if (footerEl) {
-                    const citeLink = footerEl.querySelector('a[href*="cites="]');
+                    var citeLink = footerEl.querySelector('a[href*="cites="]');
                     if (citeLink) {
-                        const citeText = citeLink.innerText || citeLink.textContent || '';
-                        const match = citeText.match(/Cited by (\\d+)/);
+                        var citeText = citeLink.innerText || citeLink.textContent || '';
+                        var match = citeText.match(/Cited by (\\d+)/i);
                         if (match) {
                             citationCount = parseInt(match[1], 10);
                         }
                     }
 
-                    const pdfLink = footerEl.querySelector('a[href*=".pdf"]') ||
-                                   (pdfContainer ? pdfContainer.querySelector('a') : null);
+                    var pdfLink = footerEl.querySelector('a[href*=".pdf"]') ||
+                                  (pdfContainer ? pdfContainer.querySelector('a') : null);
                     if (pdfLink) {
                         pdfUrl = pdfLink.href;
                     }
                 }
 
-                const clusterId = container.getAttribute('data-cid') || '';
+                // Also check footer for PDF if not found yet
+                if (!pdfUrl && pdfContainer) {
+                    var pcLink = pdfContainer.querySelector('a');
+                    if (pcLink) pdfUrl = pcLink.href;
+                }
 
-                const scholarUrl = url ? 'https://scholar.google.com/scholar?q=info:' +
-                              clusterId + ':scholar.google.com/&output=cite&scirp=0&hl=en' : '';
+                var clusterId = container.getAttribute('data-cid') || '';
+
+                var scholarUrl = clusterId
+                    ? 'https://scholar.google.com/scholar?q=info:' +
+                      clusterId + ':scholar.google.com/&output=cite&scirp=0&hl=en'
+                    : '';
+
+                // Skip rows that have no title or no link — they're not real results
+                if (!title && !url) return;
 
                 resultIdx++;
                 results.push({
@@ -507,15 +547,18 @@ class ScholarClient:
         all_results: list[ScholarResult] = []
         page_num = 0
 
-        # Start a single browser session to reuse across pages and retries
-        # This avoids launching a new Firefox instance for every page/retry
-        # (old behaviour: one browser per attempt was a severe perf regression).
+        # Start a single browser session to reuse across pages and retries.
+        # Proxy is applied at browser creation time (per attempt below the browser
+        # is reused; a fresh browser with a different proxy is created on retry
+        # if the current proxy fails).
         browser = await _create_browser(
-            None,  # proxy selected per attempt below
+            self._get_random_proxy(),
             self._config.search.headless,
         )
         if browser is None:
             raise ProxyError("Failed to start browser for Scholar search")
+
+        page = None  # bound for the CancelledError handler below
 
         try:
             while len(all_results) < max_results:
@@ -523,26 +566,70 @@ class ScholarClient:
                 url = self._build_search_url(query, page_num, advanced_params)
 
                 last_error = None
+                page = None
 
                 for attempt in range(1, retry_policy.max_retries + 1):
-                    proxy = self._get_random_proxy()
-
-                    # Update proxy on browser for each attempt (or skip if no proxy change)
-                    # Camoufox doesn't support hot-swapping proxy; we navigate with
-                    # whatever proxy was set on the browser. For retry with different
-                    # proxy, we fall through to the retry loop below.
                     try:
                         page = await _create_page(browser)
-                        await page.goto(url, wait_until="domcontentloaded")
 
-                        # Wait for results
+                        # Navigate to Scholar URL.
+                        # We start with "domcontentloaded" (always fires) then
+                        # poll for result cards.  "networkidle" can hang forever
+                        # on Scholar because of analytics / tracking beacons that
+                        # keep the network busy.
                         try:
-                            await _wait_for_results(page, [self.RESULT_CONTAINER_SELECTOR], timeout=10)
-                        except Exception as e:
-                            logger.debug("Smart wait for Scholar results timed out: %s", e)
-                            await asyncio.sleep(1)
+                            await page.goto(
+                                url,
+                                wait_until="domcontentloaded",
+                                timeout=float(self._config.search.timeout) * 1000,
+                            )
+                        except Exception as nav_err:
+                            logger.debug(
+                                "Scholar navigation failed for page %s: %s",
+                                page_num, nav_err,
+                            )
+                            raise PageTimeoutError(
+                                f"Scholar page {page_num} failed to load"
+                            ) from nav_err
 
-                        # Check for CAPTCHA
+                        # Poll repeatedly for Scholar result containers.
+                        # Scholar renders results in one or more JS waves, so
+                        # the first DOM snapshot may be empty.
+                        result_selectors = [
+                            self.RESULT_CONTAINER_SELECTOR,   # div.gs_r.gs_or.gs_scl
+                            "div.gs_ri",                       # inner result item
+                            "h3.gs_rt a",                      # title link
+                        ]
+                        found = False
+                        for poll_round in range(3):
+                            found = await _wait_for_results(
+                                page, result_selectors, timeout=8,
+                            )
+                            if found:
+                                break
+                            logger.debug(
+                                "Scholar results poll %d/3 not ready on page %s",
+                                poll_round + 1, page_num,
+                            )
+                            await asyncio.sleep(3)
+
+                        if not found:
+                            # Still nothing — try a final wait with "load" to
+                            # ensure the full page (including images/iframes) is
+                            # done before we give up.
+                            logger.debug(
+                                "Scholar results still missing on page %s; "
+                                "trying load event wait…", page_num,
+                            )
+                            try:
+                                await page.wait_for_load_state(
+                                    "load", timeout=15_000,
+                                )
+                                await asyncio.sleep(2)
+                            except Exception:
+                                pass
+
+                        # Check for CAPTCHA / block pages
                         current_url = (page.url or "").lower()
                         if "sorry/app" in current_url or "/captcha/" in current_url:
                             raise CaptchaError("CAPTCHA detected on Google Scholar")
@@ -555,44 +642,88 @@ class ScholarClient:
                         results = await self._parse_results(page, page_num)
 
                         if not results:
-                            # No more results available
-                            logger.debug("No more Scholar results for page %s", page_num)
+                            # No more results available for this query
+                            logger.debug(
+                                "No more Scholar results for page %s", page_num,
+                            )
                             return all_results[:max_results]
 
                         all_results.extend(results)
                         logger.info(
-                            "Scholar search: page %s returned %s results for query='%s'",
+                            "Scholar search: page %s returned %s results "
+                            "for query='%s'",
                             page_num, len(results), query,
                         )
 
+                        # Success — move to the next page
                         break
 
+                    except CaptchaError:
+                        # Never retry on CAPTCHA — propagate immediately
+                        raise
+                    except PageTimeoutError as e:
+                        # Scholar often rate-limits after a few pages.
+                        # Retrying with a new browser is expensive (Firefox
+                        # cold start) and rarely helps — Google blocks by IP
+                        # or session, not by browser instance.
+                        last_error = e
+                        break
                     except Exception as e:
                         last_error = e
-                        if await self._retry_failed(attempt, e, retry_policy):
-                            continue
+                        logger.warning(
+                            "Unexpected error on Scholar page %s: %s",
+                            page_num, e,
+                        )
                         break
                     finally:
-                        try:
-                            await page.close()
-                        except Exception:
-                            pass
+                        if page is not None:
+                            try:
+                                await page.close()
+                            except Exception:
+                                pass
+                            page = None
 
                 if last_error:
-                    logger.warning(
-                        "Failed to fetch Scholar results for query '%s' page %s: %s",
-                        query, page_num, last_error,
-                    )
+                    # If we have results from earlier pages, just log and
+                    # return them — partial results are better than nothing.
+                    if all_results:
+                        logger.info(
+                            "Scholar: stopping after page %s (%d results "
+                            "accumulated) — %s",
+                            page_num, len(all_results), last_error,
+                        )
+                    else:
+                        logger.warning(
+                            "Failed to fetch Scholar results for query "
+                            "'%s' page %s: %s",
+                            query, page_num, last_error,
+                        )
                     break
 
-                # Move to next page
+                # Move to next page — add a delay to avoid triggering
+                # Scholar's rate-limiting (rapid pagination looks bot-like).
                 page_num += 1
+                if len(all_results) < max_results:
+                    await asyncio.sleep(3)
 
                 # Safety limit to prevent infinite loops
                 if page_num > 100:
-                    logger.warning("Reached maximum page limit (100) for Scholar query '%s'", query)
+                    logger.warning(
+                        "Reached maximum page limit (100) for Scholar "
+                        "query '%s'", query,
+                    )
                     break
 
+        except asyncio.CancelledError:
+            # Graceful shutdown: close any open page before cleaning up the
+            # browser so that in-flight navigations don't leave unretrieved
+            # TargetClosedError futures.
+            if page is not None:
+                try:
+                    await page.close()
+                except Exception:
+                    pass
+            raise
         finally:
             try:
                 await _cleanup_browser(browser)

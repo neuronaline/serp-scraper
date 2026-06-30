@@ -13,6 +13,10 @@ global-exclude *.py[cod]
 global-exclude __pycache__/*
 global-exclude *.so
 
+# Test leak detektörlerini hariç tut (kullanıcılara gitmesin)
+exclude tests/leak_detector.py
+exclude tests/test_browser_leaks.py
+
 # Gereksiz klasörleri tamamen devre dışı bırak (prune komutu klasörler içindir)
 prune venv
 prune env

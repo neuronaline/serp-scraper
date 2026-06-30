@@ -103,8 +103,8 @@ class NewsSettings:
         time_range: Time range for news ("h"=hour, "d"=day, "w"=week, "m"=month)
     """
 
-    language: str = "tr"
-    country: str = "TR"
+    language: str = "en"
+    country: str = "US"
     time_range: str = "d"  # h=hour, d=day, w=week, m=month
 
 
@@ -127,11 +127,24 @@ class GoogleNewsClient:
         >>> asyncio.run(main())
     """
 
-    # Default search query templates for generating queries from company name
+    # Language-aware query templates for generating queries from company name.
+    # These produce more targeted RSS searches in the user's preferred language.
+    QUERY_TEMPLATES: dict[str, list[str]] = {
+        "tr": [
+            "{company}",
+            "{company} haberleri",
+            "{company} şirket haberleri",
+        ],
+        "en": [
+            "{company}",
+            "{company} news",
+            "{company} latest",
+        ],
+    }
+    # Fallback templates when language is not explicitly defined
     DEFAULT_QUERY_TEMPLATES = [
-        "{company}",  # Just the company name
-        "{company} haberleri",  # Company news
-        "{company} şirket haberleri",  # Company business news
+        "{company}",
+        "{company} news",
     ]
 
     # Google News RSS base URL
@@ -141,8 +154,8 @@ class GoogleNewsClient:
         self,
         config: Optional[SerpConfig] = None,
         use_cache: bool = True,
-        language: str = "tr",
-        country: str = "TR",
+        language: str = "en",
+        country: str = "US",
         time_range: str = "d",
     ):
         """Initialize Google News client.
@@ -167,20 +180,29 @@ class GoogleNewsClient:
     def _generate_queries(self, news_search_term: str) -> list[str]:
         """Generate search queries from news search term.
 
+        Uses language-appropriate query templates based on the current
+        news settings (e.g. Turkish templates for "tr", English for "en").
+
         Args:
             news_search_term: Term to search news for
 
         Returns:
             List of search queries
         """
+        lang = self._news_settings.language
+        templates = self.QUERY_TEMPLATES.get(lang, self.DEFAULT_QUERY_TEMPLATES)
         queries = []
-        for template in self.DEFAULT_QUERY_TEMPLATES:
+        for template in templates:
             query = template.format(company=news_search_term)
             queries.append(query)
         return queries
 
     def _build_rss_url(self, query: str) -> str:
         """Build Google News RSS URL from search query.
+
+        Google News RSS search endpoint supports: q, hl, gl, ceid.
+        Note: The ``when`` (time range) parameter is for the web/news UI,
+        not the RSS endpoint, so it is deliberately excluded here.
 
         Args:
             query: Search query string
@@ -194,9 +216,6 @@ class GoogleNewsClient:
             "gl": self._news_settings.country,
             "ceid": f"{self._news_settings.country}:{self._news_settings.language}",
         }
-        # Add time range if specified (when parameter for Google News RSS)
-        if self._news_settings.time_range:
-            params["when"] = self._news_settings.time_range
 
         return f"{self.RSS_BASE_URL}?{urlencode(params)}"
 
@@ -748,6 +767,14 @@ class GoogleNewsClient:
 
             return markdown
 
+        except asyncio.CancelledError:
+            # Graceful shutdown: close the page before browser teardown
+            if 'page' in locals():
+                try:
+                    await page.close()
+                except Exception:
+                    pass
+            raise
         finally:
             try:
                 await _cleanup_browser(browser)
@@ -785,8 +812,8 @@ def reset_default_client() -> None:
 async def quick_news(
     news_search_term: str,
     max_results: int = 50,
-    language: str = "tr",
-    country: str = "TR",
+    language: str = "en",
+    country: str = "US",
 ) -> list[NewsResult]:
     """Convenience function for getting news using default client.
 

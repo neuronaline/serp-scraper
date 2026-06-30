@@ -36,16 +36,34 @@ def _run_async_main(coro) -> None:
     - All pending tasks are cancelled before the event loop closes.
     - Subprocess transports (Playwright/Firefox) are cleaned up properly,
       avoiding ``RuntimeError: Event loop is closed`` on shutdown.
+    - "Future exception was never retrieved" warnings from Playwright
+      (TargetClosedError during Ctrl+C) are suppressed.
     """
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+
+    # Suppress "Future exception was never retrieved" warnings during
+    # shutdown.  When the user presses Ctrl+C while a Playwright page is
+    # navigating, closing the browser context causes a TargetClosedError
+    # in the navigation future — that is expected and harmless.
+    _shutting_down = False
+
+    def _exception_handler(loop_ctx, context):
+        if _shutting_down and context.get("message", "").startswith(
+            "Future exception was never retrieved"
+        ):
+            return  # suppress expected Playwright cleanup noise
+        loop.default_exception_handler(context)
+
+    loop.set_exception_handler(_exception_handler)
+
     try:
         # Register signal handlers
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
                 loop.add_signal_handler(sig, lambda s=sig: _handle_signal(s, None))
             except NotImplementedError:
-                # Windows or non-main-thread — fall back to add_signal_handler
+                # Windows or non-main-thread — fall back to signal.signal
                 signal.signal(sig, _handle_signal)
 
         main_task = loop.create_task(coro)
@@ -57,6 +75,7 @@ def _run_async_main(coro) -> None:
         # Graceful cancellation — normal path on Ctrl+C
         pass
     finally:
+        _shutting_down = True
         # Cancel any remaining tasks
         pending = asyncio.all_tasks(loop)
         for task in pending:
@@ -299,8 +318,8 @@ async def test_google_news(args: argparse.Namespace) -> int:
     max_input = input("Max results [50]: ").strip()
     max_results = int(max_input) if max_input else 50
 
-    lang_input = input("Language (tr/en) [tr]: ").strip()
-    language = lang_input if lang_input in ("tr", "en") else "tr"
+    lang_input = input("Language (tr/en) [en]: ").strip()
+    language = lang_input if lang_input in ("tr", "en") else "en"
 
     country = "TR" if language == "tr" else "US"
     mode = args.format
@@ -312,6 +331,7 @@ async def test_google_news(args: argparse.Namespace) -> int:
     print("-" * 50)
 
     try:
+        print("Fetching RSS feeds (this may take a moment)...")
         async with GoogleNewsClient(language=language, country=country) as client:
             news = await client.get_news(news_search_term, max_results=max_results)
 
@@ -353,6 +373,18 @@ async def test_google_news(args: argparse.Namespace) -> int:
         return 1
     except PageTimeoutError as e:
         error = OutputError(code="TIMEOUT_ERROR", message=str(e))
+        output = OutputFormatter.format_news(
+            news_list=[],
+            search_term=news_search_term,
+            language=language,
+            country=country,
+            mode=mode,
+            error=error,
+        )
+        print(output)
+        return 1
+    except ParseError as e:
+        error = OutputError(code="PARSE_ERROR", message=str(e))
         output = OutputFormatter.format_news(
             news_list=[],
             search_term=news_search_term,

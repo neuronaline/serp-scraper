@@ -49,8 +49,8 @@ class TestGoogleNewsClient:
 
     def test_initialization_defaults(self):
         client = GoogleNewsClient()
-        assert client._news_settings.language == "tr"
-        assert client._news_settings.country == "TR"
+        assert client._news_settings.language == "en"
+        assert client._news_settings.country == "US"
         assert client._news_settings.time_range == "d"
 
     def test_custom_settings(self):
@@ -62,8 +62,17 @@ class TestGoogleNewsClient:
     def test_generate_queries(self):
         client = GoogleNewsClient()
         queries = client._generate_queries("Tesla")
+        # Default language is "en" → 3 English templates
         assert len(queries) == 3
         assert all("Tesla" in q for q in queries)
+
+    def test_generate_queries_turkish(self):
+        client = GoogleNewsClient(language="tr", country="TR")
+        queries = client._generate_queries("Tesla")
+        # Turkish templates: 3 queries with Turkish suffixes
+        assert len(queries) == 3
+        assert any("haberleri" in q for q in queries)
+        assert any("şirket" in q for q in queries)
 
     def test_build_rss_url(self):
         client = GoogleNewsClient(language="tr", country="TR")

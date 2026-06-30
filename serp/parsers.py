@@ -658,6 +658,15 @@ async def _search_impl(
 
     except (CaptchaError, PageTimeoutError, ParseError):
         raise
+    except asyncio.CancelledError:
+        # Graceful shutdown: close the page before tearing down the browser
+        # so that in-flight navigations don't leak TargetClosedError futures.
+        if 'page' in locals():
+            try:
+                await page.close()
+            except Exception:
+                pass
+        raise
     except Exception as e:
         logger.warning("Search failed: %s: %s", type(e).__name__, e)
         raise ParseError(str(e)) from e
@@ -675,9 +684,27 @@ async def _search_impl(
 
 
 async def _cleanup_browser(browser) -> None:
-    """Stop Camoufox browser and clean up resources."""
+    """Stop Camoufox browser and clean up resources.
+
+    Closes all open pages first so that in-flight navigations are cancelled
+    cleanly, then tears down the browser context.  This prevents
+    ``TargetClosedError`` futures from leaking when the browser is shut down
+    while a page is still navigating (e.g. on Ctrl+C).
+    """
     if browser is None:
         return
+
+    # Close every open page to cancel any in-progress navigations.
+    # This avoids "Future exception was never retrieved" warnings when the
+    # browser context is destroyed while a ``page.goto()`` is pending.
+    try:
+        for page in browser.pages:
+            try:
+                await page.close()
+            except Exception:
+                pass
+    except Exception:
+        pass
 
     # Exit the AsyncCamoufox context manager (this handles browser.close())
     camoufox = getattr(browser, "_serp_camoufox", None)
@@ -754,6 +781,15 @@ async def _fetch_browser_impl(
 
         return markdown
 
+    except asyncio.CancelledError:
+        # Graceful shutdown: close the page before tearing down the browser
+        # so that in-flight navigations don't leak TargetClosedError futures.
+        if 'page' in locals():
+            try:
+                await page.close()
+            except Exception:
+                pass
+        raise
     finally:
         try:
             await _cleanup_browser(browser)

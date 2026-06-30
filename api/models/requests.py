@@ -41,7 +41,7 @@ class NewsRequest(BaseModel):
     max_results: int = Field(
         default=50, ge=1, le=100, description="Maximum number of results"
     )
-    language: str = Field(default="tr", description="Language code (tr/en)")
+    language: str = Field(default="en", description="Language code (tr/en)")
     country: Optional[str] = Field(
         default=None, description="Country code (TR/US). Auto-derived from language."
     )
